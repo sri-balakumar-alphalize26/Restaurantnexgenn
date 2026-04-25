@@ -190,6 +190,7 @@ const LoginScreenOdoo = () => {
           {/* Language Toggle */}
           <View style={styles.langToggleWrap}>
             <TouchableOpacity
+              testID="lang-toggle-en"
               style={[styles.langBtn, language === 'en' && styles.langBtnActive]}
               onPress={() => setLanguage('en')}
               activeOpacity={0.7}
@@ -197,6 +198,7 @@ const LoginScreenOdoo = () => {
               <Text style={[styles.langBtnText, language === 'en' && styles.langBtnTextActive]}>EN</Text>
             </TouchableOpacity>
             <TouchableOpacity
+              testID="lang-toggle-ar"
               style={[styles.langBtn, language === 'ar' && styles.langBtnActive]}
               onPress={() => setLanguage('ar')}
               activeOpacity={0.7}
@@ -213,7 +215,7 @@ const LoginScreenOdoo = () => {
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.cardContent}
           >
-            <Text style={[styles.title, rtlStyle]}>{t.welcomeBack}</Text>
+            <Text testID="login-welcome-title" style={[styles.title, rtlStyle]}>{t.welcomeBack}</Text>
             <Text style={[styles.subtitle, rtlStyle]}>{t.signInToContinue}</Text>
 
             {/* Username */}
@@ -222,6 +224,7 @@ const LoginScreenOdoo = () => {
               <View style={[styles.inputBox, errors.username && styles.inputError, rtlRowStyle]}>
                 <Text style={styles.inputIcon}>👤</Text>
                 <RNTextInput
+                  testID="login-username"
                   style={[styles.input, rtlStyle]}
                   value={username}
                   onChangeText={(v) => { setUsername(v); setErrors((e) => ({ ...e, username: null })); }}
@@ -232,7 +235,7 @@ const LoginScreenOdoo = () => {
                   keyboardType="email-address"
                 />
               </View>
-              {errors.username ? <Text style={[styles.errorText, rtlStyle]}>{errors.username}</Text> : null}
+              {errors.username ? <Text testID="login-username-error" style={[styles.errorText, rtlStyle]}>{errors.username}</Text> : null}
             </View>
 
             {/* Password */}
@@ -241,6 +244,7 @@ const LoginScreenOdoo = () => {
               <View style={[styles.inputBox, errors.password && styles.inputError, rtlRowStyle]}>
                 <Text style={styles.inputIcon}>🔒</Text>
                 <RNTextInput
+                  testID="login-password"
                   style={[styles.input, rtlStyle]}
                   value={password}
                   onChangeText={(v) => { setPassword(v); setErrors((e) => ({ ...e, password: null })); }}
@@ -248,17 +252,18 @@ const LoginScreenOdoo = () => {
                   placeholderTextColor="#bbb"
                   secureTextEntry={!showPassword}
                 />
-                <TouchableOpacity onPress={() => setShowPassword((v) => !v)} style={styles.eyeBtn}>
+                <TouchableOpacity testID="login-password-toggle" onPress={() => setShowPassword((v) => !v)} style={styles.eyeBtn}>
                   <Text style={styles.eyeIcon}>{showPassword ? '🙈' : '👁️'}</Text>
                 </TouchableOpacity>
               </View>
-              {errors.password ? <Text style={[styles.errorText, rtlStyle]}>{errors.password}</Text> : null}
+              {errors.password ? <Text testID="login-password-error" style={[styles.errorText, rtlStyle]}>{errors.password}</Text> : null}
             </View>
 
             {/* Autofill Credentials toggle */}
             <View style={[styles.rememberRow, rtlRowStyle]}>
               <Text style={[styles.rememberText, rtlStyle]}>{t.autofillCredentials}</Text>
               <Switch
+                testID="autofill-toggle"
                 value={rememberMe}
                 onValueChange={async (val) => {
                   setRememberMe(val);
@@ -310,6 +315,7 @@ const LoginScreenOdoo = () => {
 
             {/* Login button */}
             <TouchableOpacity
+              testID="login-submit"
               style={[styles.loginBtn, loading && { opacity: 0.7 }]}
               onPress={validate}
               disabled={loading}
