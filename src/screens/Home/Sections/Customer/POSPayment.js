@@ -11,10 +11,20 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 import ODOO_BASE_URL from '@api/config/odooConfig';
 
+// Resolve the runtime Odoo URL from AsyncStorage (set during Device Setup),
+// not the empty ODOO_BASE_URL constant. Returns null if not configured yet.
+const _getRuntimeOdooBase = async () => {
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  const url = await AsyncStorage.getItem('device_server_url');
+  return url ? url.replace(/\/+$/, '') : null;
+};
+
 // Helper to fetch all payment methods from Odoo
 const fetchAllPaymentMethods = async () => {
   try {
-    const response = await axios.post(`${ODOO_BASE_URL}/web/dataset/call_kw`, {
+    const base = await _getRuntimeOdooBase();
+    if (!base) return [];
+    const response = await axios.post(`${base}/web/dataset/call_kw`, {
       jsonrpc: '2.0',
       method: 'call',
       params: {
@@ -24,11 +34,7 @@ const fetchAllPaymentMethods = async () => {
         kwargs: { fields: ['id', 'name', 'journal_id', 'is_cash_count', 'receivable_account_id', 'split_transactions'], limit: 100 },
       },
     }, { headers: { 'Content-Type': 'application/json' } });
-    const methods = response.data?.result || [];
-    if (methods.length > 0) {
-    } else {
-    }
-    return methods;
+    return response.data?.result || [];
   } catch (e) {
     return [];
   }
@@ -36,7 +42,9 @@ const fetchAllPaymentMethods = async () => {
   // Helper to fetch payment method id for a journal
   const fetchPaymentMethodId = async (journalId) => {
     try {
-      const response = await axios.post(`${ODOO_BASE_URL}/web/dataset/call_kw`, {
+      const base = await _getRuntimeOdooBase();
+      if (!base) return null;
+      const response = await axios.post(`${base}/web/dataset/call_kw`, {
         jsonrpc: '2.0',
         method: 'call',
         params: {
@@ -46,11 +54,7 @@ const fetchAllPaymentMethods = async () => {
           kwargs: { fields: ['id', 'name', 'journal_id'], limit: 1 },
         },
       }, { headers: { 'Content-Type': 'application/json' } });
-      const paymentMethodId = response.data?.result?.[0]?.id;
-      if (paymentMethodId) {
-      } else {
-      }
-      return paymentMethodId;
+      return response.data?.result?.[0]?.id || null;
     } catch (e) {
       return null;
     }
@@ -327,7 +331,7 @@ const POSPayment = ({ navigation, route }) => {
             setTimeout(async () => {
               // Fetch and log full payment method details for journal id 9
               try {
-                const response = await axios.post(`${ODOO_BASE_URL}/web/dataset/call_kw`, {
+                const response = await axios.post(`${(await _getRuntimeOdooBase()) || ODOO_BASE_URL}/web/dataset/call_kw`, {
                   jsonrpc: '2.0',
                   method: 'call',
                   params: {
@@ -372,7 +376,7 @@ const POSPayment = ({ navigation, route }) => {
                 setTimeout(async () => {
                   if (selectedJournal) {
                     try {
-                      const response = await axios.post(`${ODOO_BASE_URL}/web/dataset/call_kw`, {
+                      const response = await axios.post(`${(await _getRuntimeOdooBase()) || ODOO_BASE_URL}/web/dataset/call_kw`, {
                         jsonrpc: '2.0',
                         method: 'call',
                         params: {
