@@ -75,6 +75,10 @@ export async function callKw(model, method, args = [[]], kwargs = {}) {
   const response = await axios.post(url, payload, {
     headers,
     timeout: 15000,
+    // Caller (printKot, loadPosConfig, etc.) handles its own errors and
+    // shows the right user-facing message. Skip the global popup so a KOT
+    // print failure doesn't blanket-mask the actual error context.
+    __skipNetworkErrorPopup: true,
   });
 
   console.log('[KOT] response status:', response.status);

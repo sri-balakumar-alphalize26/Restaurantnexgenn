@@ -1563,11 +1563,14 @@ export const linkInvoiceToPosOrderOdoo = async ({ orderId, invoiceId, setState =
 };
 
 // Create POS order in Odoo via JSON-RPC
-export const createPosOrderOdoo = async ({ partnerId = null, lines = [], sessionId = null, posConfigId = null, companyId = null, orderName = null, preset_id = 10, order_type = null } = {}) => {
+export const createPosOrderOdoo = async ({ partnerId = null, lines = [], sessionId = null, posConfigId = null, companyId = null, orderName = null, preset_id = 10, order_type = null, clientUuid = null } = {}) => {
   try {
     if (!lines || !Array.isArray(lines) || lines.length === 0) {
       throw new Error('lines are required to create pos order');
     }
+
+    const { generateUUIDv4 } = require('../../utils/uuid');
+    const idempotencyKey = clientUuid || generateUUIDv4();
 
     const { baseUrl, headers } = await _buildOdooHeaders();
 
@@ -1591,6 +1594,7 @@ export const createPosOrderOdoo = async ({ partnerId = null, lines = [], session
     const vals = {
       company_id: companyId || 1,
       name: orderName || '/',
+      client_uuid: idempotencyKey,
       partner_id: partnerId || false,
       lines: line_items,
       amount_tax: 0,

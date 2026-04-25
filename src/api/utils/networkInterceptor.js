@@ -4,14 +4,25 @@
 import axios from 'axios';
 import useNetworkErrorStore from '@components/NetworkError/networkErrorStore';
 
+// True only for GENUINE connectivity failures — Wi-Fi off, DNS down, server
+// totally unreachable. Server-side errors (4xx/5xx) and cancelled requests
+// fall through silently because they're not "no internet" situations.
 const isNetworkError = (error) => {
   if (!error) return false;
-  // Axios: no response = server unreachable / no internet / CORS.
-  if (!error.response) return true;
-  // Explicit timeout code.
-  if (error.code === 'ECONNABORTED') return true;
-  // React Native "Network Error" message.
-  if (typeof error.message === 'string' && /Network Error/i.test(error.message)) return true;
+  // Cancelled / aborted (component unmount, switched screens) — never a "no internet" error.
+  if (axios.isCancel?.(error)) return false;
+  if (error.code === 'ERR_CANCELED' || error.name === 'CanceledError' || error.name === 'AbortError') return false;
+
+  // Server actually responded with an HTTP status — that means the network
+  // works fine; the error is server-side. Don't show the popup.
+  if (error.response) return false;
+
+  // Real network/connectivity signals from React Native + Node + axios:
+  if (error.code === 'ECONNABORTED') return true;            // request timeout
+  if (['ENOTFOUND', 'ECONNREFUSED', 'ECONNRESET',
+       'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH']
+       .includes(error.code)) return true;
+  if (typeof error.message === 'string' && /Network Error|network request failed/i.test(error.message)) return true;
   return false;
 };
 
@@ -42,6 +53,10 @@ export function installNetworkInterceptor() {
       const config = error.config;
       // Avoid prompting twice for the same retried request.
       if (!config || config.__networkRetried) return Promise.reject(error);
+
+      // Background polling can opt out (logo fetch, etc.). Default behavior:
+      // any genuine connectivity failure shows the popup, on any page.
+      if (config.__skipNetworkErrorPopup) return Promise.reject(error);
 
       return new Promise((resolve, reject) => {
         const { show } = useNetworkErrorStore.getState();

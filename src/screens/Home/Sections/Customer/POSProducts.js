@@ -331,6 +331,10 @@ const localStyles = RNStyleSheet.create({
   // Bottom actions
   bottomActions: {
     marginTop: 14,
+    // Bottom inset so Kitchen Bill / Pay Now buttons don't sit under the
+    // Android system navigation bar (back/home/recent).
+    marginBottom: Platform.OS === 'android' ? 24 : 16,
+    paddingBottom: Platform.OS === 'android' ? 8 : 0,
     gap: 10,
   },
   kitchenBillBtn: {

@@ -53,6 +53,7 @@
         "android.permission.ACCESS_NETWORK_STATE"
       ],
       "package": "com.danat.alphalize",
+      "allowBackup": false,
       "config": {
         "googleMaps": {
           "apiKey": ""

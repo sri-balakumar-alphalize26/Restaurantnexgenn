@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { generateUUIDv4 } from '@utils/uuid';
 import { View, Text, ActivityIndicator, TouchableOpacity, ScrollView, StyleSheet, Modal, FlatList } from 'react-native';
 import { SafeAreaView } from '@components/containers';
 import { COLORS } from '@constants/theme';
@@ -86,6 +87,7 @@ const POSPayment = ({ navigation, route }) => {
   const [paying, setPaying] = useState(false);
   const { clearProducts } = useProductStore();
   const [inputAmount, setInputAmount] = useState('');
+  const orderUuidRef = useRef(null);
 
   // Map journals to Odoo-style payment modes (cash / card / customer account)
   const getJournalForMode = (mode) => {
@@ -189,9 +191,10 @@ const POSPayment = ({ navigation, route }) => {
         } catch (e) {
         }
       }
-      // Step 1: Log POS order creation payload
-      const posOrderPayload = { partnerId, lines, sessionId, posConfigId, companyId, orderName: '/' };
-      // include order_type from route params if provided
+      // Idempotency: reuse the same uuid across retries so duplicate POSTs
+      // (e.g. network timeout + interceptor retry) resolve to the same order.
+      if (!orderUuidRef.current) orderUuidRef.current = generateUUIDv4();
+      const posOrderPayload = { partnerId, lines, sessionId, posConfigId, companyId, orderName: '/', clientUuid: orderUuidRef.current };
       const posOrderPayloadWithPreset = { ...posOrderPayload, preset_id: 10, order_type: route?.params?.order_type };
       const resp = await createPosOrderOdoo(posOrderPayloadWithPreset);
       if (resp && resp.error) {
@@ -203,6 +206,8 @@ const POSPayment = ({ navigation, route }) => {
         Toast.show({ type: 'error', text1: 'POS Error', text2: 'No order id returned', position: 'bottom' });
         return;
       }
+      // Order confirmed — next Pay Now tap starts a fresh idempotency key.
+      orderUuidRef.current = null;
 
       // Create payment in Odoo for cash or card mode
       if ((paymentMode === 'cash' || paymentMode === 'card') && selectedJournal) {

@@ -58,7 +58,7 @@ export default function usePosLogo() {
                     args: [[]], kwargs: { fields: ['id'], limit: 1, context: {} },
                   },
                 },
-                { headers, timeout: 10000 }
+                { headers, timeout: 10000, __skipNetworkErrorPopup: true }
               );
               configId = cfgRes.data?.result?.[0]?.id;
             } catch (_) {}
@@ -78,7 +78,7 @@ export default function usePosLogo() {
                     kwargs: { fields: ['pos_logo', 'company_id'], limit: 1, context: {} },
                   },
                 },
-                { headers, timeout: 10000 }
+                { headers, timeout: 10000, __skipNetworkErrorPopup: true }
               );
               const cfg = cfgLogoRes.data?.result?.[0];
               if (cfg?.company_id) {
@@ -109,7 +109,7 @@ export default function usePosLogo() {
                       args: [[]], kwargs: { fields: ['id'], limit: 1, context: {} },
                     },
                   },
-                  { headers, timeout: 10000 }
+                  { headers, timeout: 10000, __skipNetworkErrorPopup: true }
                 );
                 companyId = compRes.data?.result?.[0]?.id;
               }
@@ -124,7 +124,7 @@ export default function usePosLogo() {
                       kwargs: { context: {} },
                     },
                   },
-                  { headers, timeout: 10000 }
+                  { headers, timeout: 10000, __skipNetworkErrorPopup: true }
                 );
                 const compLogo = logoRes.data?.result?.[0]?.logo;
                 if (typeof compLogo === 'string' && compLogo.length > 20) {
