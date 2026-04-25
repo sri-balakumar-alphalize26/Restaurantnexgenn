@@ -65,25 +65,28 @@ export const preloadAllProducts = async () => {
   };
 
   let allProducts;
+  // PERFORMANCE FIX: do NOT pull image_128 (base64) in the bulk preload.
+  // Each base64 image is 10-50KB; for a 100-product menu that's 5+ MB of
+  // JSON over the wire and was the dominant cause of 15s POS Products
+  // loads. Images now load lazily via URL when each card renders.
   try {
     // Odoo 16+: only pos_categ_ids (Many2many) exists
-    allProducts = await doFetch(['id', 'name', 'pos_categ_ids', 'list_price', 'taxes_id', 'default_code', 'image_128']);
+    allProducts = await doFetch(['id', 'name', 'pos_categ_ids', 'list_price', 'taxes_id', 'default_code']);
   } catch (e1) {
     try {
       // Odoo 13-15: only pos_categ_id (Many2one) exists
-      allProducts = await doFetch(['id', 'name', 'pos_categ_id', 'list_price', 'taxes_id', 'default_code', 'image_128']);
+      allProducts = await doFetch(['id', 'name', 'pos_categ_id', 'list_price', 'taxes_id', 'default_code']);
     } catch (e2) {
       // Neither field exists — get products without category info
-      allProducts = await doFetch(['id', 'name', 'list_price', 'taxes_id', 'default_code', 'image_128']);
+      allProducts = await doFetch(['id', 'name', 'list_price', 'taxes_id', 'default_code']);
     }
   }
 
   const _preloadTs = Date.now();
   _allProductsCache = allProducts.map(p => {
-    const hasBase64 = p.image_128 && typeof p.image_128 === 'string' && p.image_128.length > 0;
-    const imageUrl = hasBase64
-      ? `data:image/png;base64,${p.image_128}`
-      : `${baseUrl}/web/image?model=product.template&id=${p.id}&field=image_128&_ts=${_preloadTs}`;
+    // Always lazy-load images via Odoo's binary endpoint — keeps the bulk
+    // payload small. FlashList will fetch each image when its card renders.
+    const imageUrl = `${baseUrl}/web/image?model=product.template&id=${p.id}&field=image_128&_ts=${_preloadTs}`;
     return { ...p, product_name: p.name || '', image_url: imageUrl };
   });
   _allProductsCacheTime = Date.now();
@@ -105,19 +108,15 @@ export const fetchProductsByPosCategoryId = async (posCategoryId) => {
   if (!catId) return [];
 
   const { baseUrl, dbName, headers } = await _buildOdooHeaders();
-  const baseFields = ['id', 'name', 'list_price', 'default_code', 'image_128'];
+  // PERFORMANCE: drop image_128 from the bulk fetch — load images lazily by URL.
+  const baseFields = ['id', 'name', 'list_price', 'default_code'];
 
   const _ts = Date.now();
-  const toProduct = (p) => {
-    const hasBase64 = p.image_128 && typeof p.image_128 === 'string' && p.image_128.length > 0;
-    return {
-      ...p,
-      product_name: p.name || '',
-      image_url: hasBase64
-        ? `data:image/png;base64,${p.image_128}`
-        : `${baseUrl}/web/image?model=product.template&id=${p.id}&field=image_128&_ts=${_ts}`,
-    };
-  };
+  const toProduct = (p) => ({
+    ...p,
+    product_name: p.name || '',
+    image_url: `${baseUrl}/web/image?model=product.template&id=${p.id}&field=image_128&_ts=${_ts}`,
+  });
 
   const doDirectFetch = async (domain, fields) => {
     const response = await axios.post(
@@ -2143,7 +2142,7 @@ export const fetchPosOrderById = async (orderId) => {
           method: 'search_read',
           args: [[['id', '=', orderId]]],
           // include preset_id so clients can read the selected preset on the order
-          kwargs: { fields: ['id','name','state','amount_total','table_id','lines','create_date','user_id','partner_id','preset_id','pricelist_id'] },
+          kwargs: { fields: ['id','name','state','amount_total','table_id','lines','create_date','user_id','partner_id','preset_id','pricelist_id','pos_reference'] },
         },
         id: new Date().getTime(),
       }),

@@ -1314,32 +1314,27 @@ const POSProducts = ({ navigation, route }) => {
     const { orderId, orderLines } = route?.params || {};
     if (orderLines && Array.isArray(orderLines) && orderLines.length > 0) {
       const cartOwner = `order_${orderId}`;
-      // Only load from route params if local cart is empty
-      const existingCart = useProductStore.getState().cartItems[cartOwner] || [];
-      if (existingCart.length === 0) {
-        // Build cart array synchronously from orderLines first
-        const mappedItems = orderLines.map(line => mapLineToProduct(line));
-        // Atomically set customer + cart in one store update
-        loadCustomerCart(cartOwner, mappedItems);
-        setLoadedOrderLines(orderLines);
-        // Then apply saved names asynchronously (updates in-place)
-        (async () => {
-          const savedNames = await loadProductNames(orderId);
-          if (Object.keys(savedNames).length > 0) {
-            const currentCart = useProductStore.getState().cartItems[cartOwner] || [];
-            const updatedCart = currentCart.map(item => {
-              const pid = item.remoteId;
-              if (pid && savedNames[pid]) {
-                return { ...item, name: savedNames[pid], product_name: savedNames[pid] };
-              }
-              return item;
-            });
-            loadCustomerCart(cartOwner, updatedCart);
-          }
-        })();
-      } else {
-        setCurrentCustomer(cartOwner);
-      }
+      // ALWAYS replace local cart with the server's view of this order on
+      // re-entry. Multi-terminal POS: another terminal may have added items
+      // since we last viewed this table — the server is the source of truth.
+      const mappedItems = orderLines.map(line => mapLineToProduct(line));
+      loadCustomerCart(cartOwner, mappedItems);
+      setLoadedOrderLines(orderLines);
+      // Then apply saved names asynchronously (updates in-place)
+      (async () => {
+        const savedNames = await loadProductNames(orderId);
+        if (Object.keys(savedNames).length > 0) {
+          const currentCart = useProductStore.getState().cartItems[cartOwner] || [];
+          const updatedCart = currentCart.map(item => {
+            const pid = item.remoteId;
+            if (pid && savedNames[pid]) {
+              return { ...item, name: savedNames[pid], product_name: savedNames[pid] };
+            }
+            return item;
+          });
+          loadCustomerCart(cartOwner, updatedCart);
+        }
+      })();
     }
   }, []);
 
@@ -1793,6 +1788,9 @@ const POSProducts = ({ navigation, route }) => {
   }, [computeLineTotal]);
 
   // Break the cart total into subtotal (net) + tax so the register can show both.
+  // Handles BOTH tax modes:
+  //   - tax-exclusive: line price is net, tax adds on top  (Subtotal=net, Total=net+tax)
+  //   - tax-inclusive: line price already contains tax     (Subtotal=net (extracted), Total=gross)
   const computeCartBreakdown = useCallback((items) => {
     let subtotal = 0;
     let total = 0;
@@ -1800,20 +1798,31 @@ const POSProducts = ({ navigation, route }) => {
       const lineTotal = computeLineTotal(it);
       total += lineTotal;
 
-      // Subtotal per line: prefer Odoo's price_subtotal (net), else qty * unit.
+      let lineSubtotal;
+      // Prefer Odoo's pre-computed net subtotal if the line came from server.
       if (it.price_subtotal !== undefined && it.price_subtotal !== null) {
-        subtotal += Number(it.price_subtotal) || 0;
+        lineSubtotal = Number(it.price_subtotal) || 0;
       } else {
+        // Locally-added item: extract net from gross when any of its taxes is tax-inclusive.
         const qty = Number(it.quantity ?? it.qty ?? 1);
         const unit = Number(it.price_unit ?? it.price ?? 0);
-        subtotal += qty * unit;
+        const grossLine = qty * unit;
+        const taxIds = Array.isArray(it.taxes_id) ? it.taxes_id : [];
+        const inclusiveTaxRate = taxIds.reduce((sum, tid) => {
+          const tx = taxRateMap[tid];
+          return tx && tx.priceInclude ? sum + (tx.amount || 0) : sum;
+        }, 0);
+        lineSubtotal = inclusiveTaxRate > 0
+          ? grossLine / (1 + inclusiveTaxRate / 100)
+          : grossLine;
       }
+      subtotal += lineSubtotal;
     });
     subtotal = Math.round(subtotal * 1000) / 1000;
     total = Math.round(total * 1000) / 1000;
     const tax = Math.round((total - subtotal) * 1000) / 1000;
     return { subtotal, tax, total };
-  }, [computeLineTotal]);
+  }, [computeLineTotal, taxRateMap]);
 
   const renderRegisterPanel = () => {
     const cartItems = useProductStore((s) => s.getCurrentCart()) || [];
@@ -1825,7 +1834,13 @@ const POSProducts = ({ navigation, route }) => {
         <View style={localStyles.registerHeader}>
           <View style={{ flex: 1 }}>
             <Text style={localStyles.registerTitle}>{route?.params?.registerName || t.register}</Text>
-            {orderInfo?.name && orderInfo.name !== '/' ? <Text style={localStyles.registerOrderName}>{orderInfo.name}</Text> : (orderInfo?.id ? <Text style={localStyles.registerOrderName}>{t.order} #{orderInfo.id}</Text> : null)}
+            {/* Prefer pos_reference (260-1-000005) so the receipt number matches what
+                the web POS shows. Fall back to name, then to internal id. */}
+            {orderInfo?.pos_reference
+              ? <Text style={localStyles.registerOrderName}>{orderInfo.pos_reference}</Text>
+              : (orderInfo?.name && orderInfo.name !== '/'
+                  ? <Text style={localStyles.registerOrderName}>{orderInfo.name}</Text>
+                  : (orderInfo?.id ? <Text style={localStyles.registerOrderName}>{t.order} #{orderInfo.id}</Text> : null))}
           </View>
           <View style={localStyles.registerUserBadge}>
             <Text style={localStyles.registerUserText}>{route?.params?.userName || t.staff}</Text>
