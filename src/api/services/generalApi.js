@@ -1659,10 +1659,16 @@ export const createPosOrderOdoo = async ({ partnerId = null, lines = [], session
 };
 
 // Create POS payment(s) in Odoo via JSON-RPC
-// Accepts either a single payment or an array of payments
-export const createPosPaymentOdoo = async ({ orderId, payments, amount, journalId, paymentMethodId, paymentMode = 'cash', partnerId = null, sessionId = null, companyId = null } = {}) => {
+// Accepts either a single payment or an array of payments.
+// `clientUuid`: idempotency key — a retry/double-tap with the same UUID will
+// return the existing pos.payment instead of creating a duplicate (requires
+// pos_idempotent_create v19.0.3.0.0+ on Odoo).
+export const createPosPaymentOdoo = async ({ orderId, payments, amount, journalId, paymentMethodId, paymentMode = 'cash', partnerId = null, sessionId = null, companyId = null, clientUuid = null } = {}) => {
   try {
     if (!orderId) throw new Error('orderId is required');
+
+    const { generateUUIDv4 } = require('../../utils/uuid');
+    const baseUuid = clientUuid || generateUUIDv4();
 
     const { baseUrl, headers } = await _buildOdooHeaders();
 
@@ -1677,9 +1683,13 @@ export const createPosPaymentOdoo = async ({ orderId, payments, amount, journalI
     }
 
     const results = [];
-    for (const payment of paymentRecords) {
+    for (let pmtIdx = 0; pmtIdx < paymentRecords.length; pmtIdx++) {
+      const payment = paymentRecords[pmtIdx];
       const amt = Number(payment.amount) || 0;
       if (amt === 0) continue;
+      // Per-payment idempotency key: split flag for split-tender so each line
+      // is its own dedup target, but a retry of the same line uses the same UUID.
+      const lineUuid = paymentRecords.length > 1 ? `${baseUuid}::${pmtIdx}` : baseUuid;
 
       let finalPaymentMethodId = payment.paymentMethodId || paymentMethodId;
       let finalJournalId = payment.journalId || journalId;
@@ -1708,6 +1718,7 @@ export const createPosPaymentOdoo = async ({ orderId, payments, amount, journalI
         partner_id: partnerId || false,
         session_id: sessionId || false,
         company_id: companyId || 1,
+        client_uuid: lineUuid,
       };
 
       const response = await fetch(`${baseUrl}/web/dataset/call_kw`, {

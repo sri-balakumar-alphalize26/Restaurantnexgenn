@@ -3,7 +3,7 @@ import { View, Text, TextInput, FlatList, TouchableOpacity, ScrollView, Modal, P
 import { NavigationHeader } from '@components/Header';
 import { ProductsList } from '@components/Product';
 import { fetchPosPresets, addLineToOrderOdoo, updateOrderLineOdoo, removeOrderLineOdoo, fetchPosOrderById, fetchOrderLinesByIds, fetchPosCategoriesOdoo, fetchProductCategoriesOdoo, fetchCategoriesOdoo, preloadAllProducts, createDraftPosOrderOdoo, fetchPosPaymentMethodsOdoo, createPosOrderOdoo, createPosPaymentOdoo, fetchPOSSessions, fetchPricelistsOdoo, fetchPricelistItemsOdoo, updatePosOrderFields, fetchPresetSchedule } from '@api/services/generalApi';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
 import { formatData } from '@utils/formatters';
 import { formatCurrency } from '@utils/formatters/currency';
@@ -536,6 +536,10 @@ const POSProducts = ({ navigation, route }) => {
   const pendingSyncs = useRef([]);  // Track pending addLine API calls
   const initialLoadDone = useRef(false);  // Track if initial server load is complete
   const orderIdRef = useRef(route?.params?.orderId || null);  // Mutable orderId — set lazily for takeaway
+  // Idempotency key for the current Pay Now attempt — survives across retries
+  // so a double-tap or auto-retry never creates duplicate pos.payment rows.
+  // Cleared only on confirmed success.
+  const paymentUuidRef = useRef(null);
 
   // Search: input value updates instantly, filter value is debounced so it doesn't block touches
   const [searchText, setSearchText] = useState('');
@@ -909,6 +913,14 @@ const POSProducts = ({ navigation, route }) => {
       const isCash = selectedMethod?.is_cash_count || String(selectedMethod?.name || '').toLowerCase().includes('cash');
       const paidAmt = isCash ? (parseFloat(payInputAmount) || totalAmt) : totalAmt;
 
+      // Idempotency: reuse the same UUID across retries of this Pay Now attempt
+      // so duplicate POSTs (double-tap, network retry) resolve to the SAME pos.payment
+      // record on the server (requires pos_idempotent_create v19.0.3.0.0+).
+      if (!paymentUuidRef.current) {
+        const { generateUUIDv4 } = require('@utils/uuid');
+        paymentUuidRef.current = generateUUIDv4();
+      }
+
       // Step 1: Add payment record to the existing order
       const paymentVals = {
         pos_order_id: existingOrderId,
@@ -916,6 +928,7 @@ const POSProducts = ({ navigation, route }) => {
         payment_method_id: selectedPayMethodId,
         session_id: sessionId || false,
         company_id: 1,
+        client_uuid: paymentUuidRef.current,
       };
 
       const payResp = await fetch(`${baseUrl}/web/dataset/call_kw`, {
@@ -958,6 +971,9 @@ const POSProducts = ({ navigation, route }) => {
 
       // Step 4: Clear cart and navigate
       try { clearProducts(); } catch (_) {}
+      // Payment is confirmed on the server — release the idempotency key so
+      // the NEXT Pay Now (different cart) generates a fresh UUID.
+      paymentUuidRef.current = null;
       const isTakeaway = String(route?.params?.order_type || '').toUpperCase() === 'TAKEAWAY';
       if (isTakeaway) { try { await AsyncStorage.removeItem('active_takeaway_order'); } catch (_) {} }
 
@@ -1167,49 +1183,72 @@ const POSProducts = ({ navigation, route }) => {
     const cartOwner = `order_${orderId}`;
     setCurrentCustomer(cartOwner);
 
-    // If local cart already has items, sync notes/discounts from server
+    // Server is the source of truth. Merge bidirectionally: keep local items
+    // that match a server line (preserves local notes/discounts), drop locals
+    // that the server no longer has (deleted from another terminal), and
+    // ADD any server lines that don't exist locally yet (added by another
+    // terminal — e.g. web POS added items while we were on this screen).
     const localCart = useProductStore.getState().cartItems[cartOwner] || [];
     if (localCart.length > 0) {
       try {
         const orderResp = await fetchPosOrderById(orderId);
         const orderResult = orderResp?.result ?? null;
         setOrderInfo(orderResult);
-        // Sync pricelist button from order
         if (orderResult?.pricelist_id) {
           const plId = Array.isArray(orderResult.pricelist_id) ? orderResult.pricelist_id[0] : orderResult.pricelist_id;
           if (plId) { setActivePricelistId(plId); activePricelistRef.current = plId; }
         }
-        // Sync notes and discounts from Odoo back to local cart
         const lineIds = orderResp?.result?.lines ?? [];
-        if (lineIds.length > 0) {
-          const linesResp = await fetchOrderLinesByIds(lineIds);
-          const serverLines = linesResp?.result ?? [];
-          const updatedCart = localCart.map(item => {
-            const productId = item.remoteId || item.id;
-            const lineId = String(item.id).startsWith('odoo_line_') ? Number(String(item.id).replace('odoo_line_', '')) : null;
-            const serverLine = lineId
-              ? serverLines.find(l => l.id === lineId)
-              : serverLines.find(l => (Array.isArray(l.product_id) ? l.product_id[0] : l.product_id) === productId);
-            if (serverLine) {
-              const serverDiscount = Number(serverLine.discount || 0);
-              const serverNote = serverLine.customer_note || '';
-              const origPrice = Number(serverLine.price_unit || item.price_unit || item.price || 0);
-              const effectivePrice = serverDiscount > 0
-                ? Math.round((origPrice * (1 - serverDiscount / 100)) * 1000) / 1000
-                : origPrice;
-              return {
-                ...item,
-                note: serverNote,
-                discount_percent: serverDiscount,
-                price_unit: effectivePrice,
-                price: effectivePrice,
-                original_price_unit: serverDiscount > 0 ? origPrice : undefined,
-              };
-            }
-            return item;
-          });
-          loadCustomerCart(cartOwner, updatedCart);
+        if (lineIds.length === 0) {
+          // Server has no lines anymore — clear local cart for this order.
+          loadCustomerCart(cartOwner, []);
+          return;
         }
+        const linesResp = await fetchOrderLinesByIds(lineIds);
+        const serverLines = linesResp?.result ?? [];
+
+        const matchLocalForServerLine = (sl) => {
+          const slProductId = Array.isArray(sl.product_id) ? sl.product_id[0] : sl.product_id;
+          const slLineId = sl.id;
+          return localCart.find(item => {
+            const localLineId = String(item.id).startsWith('odoo_line_')
+              ? Number(String(item.id).replace('odoo_line_', ''))
+              : null;
+            if (localLineId && localLineId === slLineId) return true;
+            const localPid = item.remoteId || item.id;
+            return localPid === slProductId;
+          });
+        };
+
+        // For each server line: build the merged cart row
+        const mergedCart = serverLines.map(sl => {
+          const local = matchLocalForServerLine(sl);
+          const mappedFromServer = mapLineToProduct(sl);
+          if (local) {
+            // Preserve local item identity, overlay server's discount/note/price
+            const serverDiscount = Number(sl.discount || 0);
+            const serverNote = sl.customer_note || '';
+            const origPrice = Number(sl.price_unit || local.price_unit || local.price || 0);
+            const effectivePrice = serverDiscount > 0
+              ? Math.round((origPrice * (1 - serverDiscount / 100)) * 1000) / 1000
+              : origPrice;
+            return {
+              ...local,
+              quantity: mappedFromServer.quantity,
+              qty: mappedFromServer.qty,
+              price_subtotal: mappedFromServer.price_subtotal,
+              price_subtotal_incl: mappedFromServer.price_subtotal_incl,
+              note: serverNote,
+              discount_percent: serverDiscount,
+              price_unit: effectivePrice,
+              price: effectivePrice,
+              original_price_unit: serverDiscount > 0 ? origPrice : undefined,
+            };
+          }
+          // No matching local — this is a NEW item from another terminal.
+          return mappedFromServer;
+        });
+        loadCustomerCart(cartOwner, mergedCart);
       } catch (_) {}
       return;
     }
@@ -1285,6 +1324,23 @@ const POSProducts = ({ navigation, route }) => {
       }
     }, [route?.params?.orderId, route?.params?.cartOwner, setCurrentCustomer, refreshServerOrder])
   );
+
+  // Live multi-terminal sync: while this screen is focused, poll the server
+  // every 5 seconds so changes made on another terminal (web POS, sister tablet)
+  // appear here without manual refresh. Paused on blur to save battery.
+  const isFocused = useIsFocused();
+  useEffect(() => {
+    if (!isFocused) return;
+    const orderId = orderIdRef.current;
+    if (!orderId) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try { await refreshServerOrder(orderId); } catch (_) {}
+    };
+    const handle = setInterval(tick, 5000);
+    return () => { cancelled = true; clearInterval(handle); };
+  }, [isFocused, refreshServerOrder, route?.params?.orderId]);
 
   // Eagerly fetch order state on mount (so buttons hide immediately for paid orders)
   useEffect(() => {
