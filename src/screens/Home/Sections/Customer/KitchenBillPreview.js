@@ -19,7 +19,7 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import kotService from '../../../../api/services/kotService';
 import { updatePosOrderFields } from '../../../../api/services/generalApi';
@@ -260,7 +260,7 @@ const KitchenBillPreview = ({ navigation, route }) => {
 
   // ── UI ───────────────────────────────────────────────────────
   return (
-    <SafeAreaView style={s.safe} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={s.safe} edges={['top', 'left', 'right', 'bottom']}>
       {/* Header */}
       <View style={s.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={s.backBtn}>
@@ -491,7 +491,7 @@ const s = StyleSheet.create({
 
   bottomBar: {
     padding: 16,
-    paddingBottom: 24,
+    paddingBottom: 16,
     backgroundColor: '#fff',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,

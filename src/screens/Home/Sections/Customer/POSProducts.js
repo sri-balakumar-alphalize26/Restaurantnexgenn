@@ -328,13 +328,11 @@ const localStyles = RNStyleSheet.create({
     letterSpacing: 0.5,
   },
 
-  // Bottom actions
+  // Bottom actions — SafeAreaView wrapper applies the device-specific
+  // bottom inset, so we just need a small visual margin here.
   bottomActions: {
     marginTop: 14,
-    // Bottom inset so Kitchen Bill / Pay Now buttons don't sit under the
-    // Android system navigation bar (back/home/recent).
-    marginBottom: Platform.OS === 'android' ? 24 : 16,
-    paddingBottom: Platform.OS === 'android' ? 8 : 0,
+    marginBottom: 12,
     gap: 10,
   },
   kitchenBillBtn: {
