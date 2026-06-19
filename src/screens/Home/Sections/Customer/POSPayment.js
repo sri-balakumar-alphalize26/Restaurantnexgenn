@@ -7,6 +7,7 @@ import { NavigationHeader } from '@components/Header';
 import { Button } from '@components/common/Button';
 import { fetchPaymentJournalsOdoo, createAccountPaymentOdoo, fetchPOSSessions } from '@api/services/generalApi';
 import { createPosOrderOdoo, createPosPaymentOdoo } from '@api/services/generalApi';
+import { printReceipt, printInvoice } from '@api/services/kotService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 import ODOO_BASE_URL from '@api/config/odooConfig';
@@ -289,6 +290,29 @@ const POSPayment = ({ navigation, route }) => {
           Toast.show({ type: 'error', text1: 'Payment Error', text2: e?.message || 'Failed to create payment', position: 'bottom' });
         }
       }
+
+      // Best-effort auto-print: counter receipt (+ invoice if requested).
+      // Fire-and-forget — never blocks the order. Shows a toast so the cashier
+      // can SEE whether it was sent; stays silent only when no printer is
+      // configured (that's an intentional setup, not a failure).
+      const _toastDoc = (label, r) => {
+        if (!r) return;
+        if (r.success) {
+          Toast.show({ type: 'success', text1: `🧾 ${label} sent to printer`, position: 'bottom', visibilityTime: 2000 });
+        } else {
+          const msg = r.error || r.message || 'Unknown error';
+          console.log(`[${label}] not printed:`, msg);
+          if (!/no .*printer configured/i.test(msg)) {
+            Toast.show({ type: 'error', text1: `${label} not printed`, text2: msg, position: 'bottom', visibilityTime: 3500 });
+          }
+        }
+      };
+      try {
+        printReceipt(createdOrderId).then((r) => _toastDoc('Receipt', r)).catch(() => {});
+        if (invoiceChecked) {
+          printInvoice(createdOrderId).then((r) => _toastDoc('Invoice', r)).catch(() => {});
+        }
+      } catch (_) {}
 
       // Proceed to receipt screen
       // If this was a TAKEAWAY order, clear the active takeaway marker

@@ -10,6 +10,8 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
+import { isLocalServerUrl } from '@utils/network/serverMode';
+import { deliverRenderedJobs } from '@utils/printing/lanPrinter';
 
 // ── Read connection info from AsyncStorage ───────────────────
 
@@ -178,6 +180,15 @@ export async function printKot(kotData) {
     const _rawSlot = String(kotData.slot_time || '').trim();
     const _slotOut = _rawSlot || `${_nowDate} ${_nowTime}`;
 
+    // A POS config id is required for category→printer routing on the server.
+    let resolvedConfigId = posConfig?.id || configId || null;
+    if (!resolvedConfigId) {
+      try {
+        const cfgs = await callKw('pos.config', 'search_read', [[]], { fields: ['id'], limit: 1 });
+        resolvedConfigId = (cfgs && cfgs[0] && cfgs[0].id) || false;
+      } catch (_) {}
+    }
+
     const data = {
       table_name: kotData.table_name || '',
       order_name: _nameOut,
@@ -188,25 +199,82 @@ export async function printKot(kotData) {
       guest_count: kotData.guest_count || 0,
       print_type: kotData.print_type || 'NEW',
       slot_time: _slotOut,
-      config_id: posConfig?.id || configId || false,
+      config_id: resolvedConfigId || false,
       printer_ip: printerIp,
       printer_port: printerPort,
       items: (kotData.items || []).map((it) => ({
         name: it.name || 'Item',
         qty: Number(it.qty || 1),
         note: it.note || '',
+        // category_id drives multi-printer routing (e.g. Food→pizza, Drinks→juice)
+        category_id: it.category_id != null ? it.category_id : null,
       })),
     };
 
     console.log('[KOT] printKot data:', JSON.stringify(data, null, 2));
 
-    const result = await callKw('pos.kot.print', 'print_kot', [data]);
-    console.log('[KOT] printKot result:', JSON.stringify(result));
-    return result || { success: true };
+    // Local server → Odoo reaches the printers and prints directly.
+    // Online server → this app is the print agent: Odoo renders the bytes,
+    // we deliver them to the printers over the LAN.
+    const serverUrl = (await AsyncStorage.getItem('device_server_url')) || '';
+    if (isLocalServerUrl(serverUrl)) {
+      const result = await callKw('pos.kot.print', 'print_kot', [data]);
+      console.log('[KOT] printKot (local) result:', JSON.stringify(result));
+      return result || { success: true };
+    }
+
+    console.log('[KOT] online mode — render on server, print from app over LAN');
+    const rendered = await callKw('pos.kot.print', 'render_kot', [data]);
+    if (!rendered || rendered.success === false) {
+      return { success: false, error: rendered?.message || 'Server could not render KOT' };
+    }
+    const jobs = rendered.printers || [];
+    if (!jobs.length) {
+      return { success: false, error: 'No printer matched these items. Check KOT Setup categories.' };
+    }
+    const delivered = await deliverRenderedJobs(jobs, 'kot');
+    console.log('[KOT] online delivery result:', JSON.stringify(delivered));
+    return delivered;
   } catch (error) {
     console.error('[KOT] printKot error:', error.message);
     return { success: false, error: error.message };
   }
+}
+
+// ── Customer receipt / invoice ───────────────────────────────
+// Best-effort: Odoo reads the order by id, renders the document, and prints
+// to the Receipt/Counter printer (local) or returns bytes for the app to
+// deliver (online). Never throws — returns {success:false} so callers can
+// fire-and-forget without breaking the payment flow.
+
+async function _printDocument(docType, orderId, configId) {
+  try {
+    if (!orderId) return { success: false, error: 'No order id' };
+    const serverUrl = (await AsyncStorage.getItem('device_server_url')) || '';
+    const local = isLocalServerUrl(serverUrl);
+    const method = local ? `print_${docType}` : `render_${docType}`;
+    const result = await callKw('pos.kot.print', method, [orderId, configId || false]);
+
+    if (local) {
+      return result || { success: true };
+    }
+    if (!result || result.success === false) {
+      return { success: false, error: result?.message || `Server could not render ${docType}` };
+    }
+    const jobs = result.printers || [];
+    if (!jobs.length) return { success: false, error: `No ${docType} printer configured` };
+    return await deliverRenderedJobs(jobs, docType);
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+export async function printReceipt(orderId, configId = null) {
+  return _printDocument('receipt', orderId, configId);
+}
+
+export async function printInvoice(orderId, configId = null) {
+  return _printDocument('invoice', orderId, configId);
 }
 
 // ── Fetch Data from Odoo ─────────────────────────────────────
@@ -302,6 +370,8 @@ export async function addLineToOrder({ orderId, productId, qty, price_unit }) {
 
 export default {
   printKot,
+  printReceipt,
+  printInvoice,
   getPosConfig,
   loadPosConfig,
   clearPosConfigCache,

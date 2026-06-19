@@ -1,0 +1,229 @@
+.btn-warning {
+    background-color: #F5A623 !important;
+    border-color: #F5A623 !important;
+}
+
+/* ────────────────────────────────────────────────
+ *  KOT choice dialog (NEW vs FULL)
+ * ──────────────────────────────────────────────── */
+.kot-dialog-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: kotFadeIn 120ms ease-out;
+}
+
+@keyframes kotFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.kot-dialog-box {
+    position: relative;
+    background: #fff;
+    width: min(560px, 92vw);
+    border-radius: 12px;
+    padding: 24px 24px 28px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.kot-dialog-title {
+    font-size: 20px;
+    font-weight: 600;
+    color: #222;
+    text-align: center;
+    margin-bottom: 16px;
+}
+
+.kot-dialog-list {
+    background: #f7f7f9;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 14px;
+    color: #444;
+    margin-bottom: 20px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.kot-dialog-list ul {
+    margin: 6px 0 0;
+    padding-left: 20px;
+}
+
+.kot-dialog-list li {
+    margin: 2px 0;
+}
+
+.kot-dialog-btns {
+    display: flex;
+    gap: 14px;
+}
+
+.kot-btn {
+    flex: 1;
+    padding: 22px 14px;
+    border: none;
+    border-radius: 10px;
+    color: #fff;
+    cursor: pointer;
+    font-family: inherit;
+    transition: transform 80ms ease, filter 80ms ease;
+}
+
+.kot-btn:hover {
+    filter: brightness(1.06);
+    transform: translateY(-1px);
+}
+
+.kot-btn:active {
+    transform: translateY(0);
+    filter: brightness(0.95);
+}
+
+.kot-btn-green {
+    background: #28a745;
+    box-shadow: 0 4px 0 #1e7e34;
+}
+
+.kot-btn-red {
+    background: #dc3545;
+    box-shadow: 0 4px 0 #a71d2a;
+}
+
+.kot-btn-label {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+}
+
+.kot-btn-sub {
+    font-size: 13px;
+    opacity: 0.92;
+    margin-top: 4px;
+}
+
+.kot-dialog-close {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: transparent;
+    color: #888;
+    font-size: 26px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+}
+
+.kot-dialog-close:hover {
+    color: #222;
+}
+
+/* Selection dialog (checkbox list) */
+.kot-dialog-box-select {
+    width: min(620px, 94vw);
+}
+
+.kot-toggle-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.kot-toggle-btn {
+    flex: 1;
+    padding: 8px 10px;
+    border: 1px solid #d1d5db;
+    background: #f9fafb;
+    color: #374151;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.kot-toggle-btn:hover {
+    background: #f3f4f6;
+    border-color: #9ca3af;
+}
+
+.kot-select-list {
+    max-height: 360px;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 4px;
+    margin-bottom: 18px;
+}
+
+.kot-item-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.kot-item-row:hover {
+    background: #f3f4f6;
+}
+
+.kot-item-row-new {
+    background: #ecfdf5;
+}
+
+.kot-item-row-new:hover {
+    background: #d1fae5;
+}
+
+.kot-item-cb {
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+    accent-color: #28a745;
+}
+
+.kot-item-qty {
+    min-width: 36px;
+    font-weight: 700;
+    color: #111827;
+}
+
+.kot-item-name {
+    flex: 1;
+    color: #1f2937;
+    font-size: 15px;
+}
+
+.kot-item-tag {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 99px;
+    background: #e5e7eb;
+    color: #6b7280;
+}
+
+.kot-item-row-new .kot-item-tag {
+    background: #28a745;
+    color: #fff;
+}
+
+.kot-btn-cancel {
+    background: #6b7280;
+    box-shadow: 0 4px 0 #4b5563;
+}
+
+.kot-btn-ok {
+    background: #2563eb;
+    box-shadow: 0 4px 0 #1d4ed8;
+}

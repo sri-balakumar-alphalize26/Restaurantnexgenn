@@ -135,6 +135,19 @@ const KitchenBillPreview = ({ navigation, route }) => {
     }
   }, [orderId, orderName, order_type, items.length]);
 
+  // Resolve the POS category id of a cart item (drives KOT printer routing).
+  // Products carry pos_categ_ids (array of ids, or [[id,name]] pairs).
+  const catIdOf = (it) => {
+    const pc = it.pos_categ_ids;
+    if (Array.isArray(pc) && pc.length) {
+      return typeof pc[0] === 'object' ? (pc[0]?.id ?? null) : pc[0];
+    }
+    if (Array.isArray(it.pos_categ_id)) return it.pos_categ_id[0] ?? null;
+    if (it.pos_categ_id != null) return it.pos_categ_id;
+    if (Array.isArray(it.categ_id)) return it.categ_id[0] ?? null;
+    return null;
+  };
+
   // ── Map items to display format ──────────────────────────────
   const mapped = useMemo(
     () =>
@@ -143,6 +156,7 @@ const KitchenBillPreview = ({ navigation, route }) => {
         name: it.name || (Array.isArray(it.product_id) ? it.product_id[1] : 'Item'),
         qty: Number(it.quantity ?? it.qty ?? 1),
         note: it.note || '',
+        category_id: catIdOf(it),
       })),
     [items],
   );
@@ -156,6 +170,7 @@ const KitchenBillPreview = ({ navigation, route }) => {
       name: it.name || (Array.isArray(it.product_id) ? it.product_id[1] : 'Item'),
       qty: Number(it.quantity ?? it.qty ?? 1),
       note: it.note || '',
+      category_id: catIdOf(it),
     }));
   }, [snapshotKey, items, mapped]);
 
@@ -219,6 +234,7 @@ const KitchenBillPreview = ({ navigation, route }) => {
             name: it.name,
             qty: it.qty,
             note: it.note || '',
+            category_id: it.category_id ?? null,
           })),
         };
 

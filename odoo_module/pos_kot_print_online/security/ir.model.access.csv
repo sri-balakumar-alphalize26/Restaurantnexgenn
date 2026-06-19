@@ -1,0 +1,5 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_pos_kot_print,pos.kot.print,model_pos_kot_print,point_of_sale.group_pos_user,1,1,1,0
+access_pos_kot_printer,pos.kot.printer,model_pos_kot_printer,point_of_sale.group_pos_manager,1,1,1,1
+access_pos_kot_queue_user,pos.kot.queue.user,model_pos_kot_queue,point_of_sale.group_pos_user,1,1,1,0
+access_pos_kot_queue_manager,pos.kot.queue.manager,model_pos_kot_queue,point_of_sale.group_pos_manager,1,1,1,1

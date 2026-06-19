@@ -45,3 +45,20 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+
+# Runtime / test artifacts (Claude session)
+*.log
+fake_prints/
+appium-artifacts/
+tablet*.png
+tablet-*.png
+ui-current.xml
+*.apk
+__pycache__/
+*.pyc
+**/kotprintimage/**/*.png
+docs/.~lock*#
+
+# more noise
+.claude/
+logcat*.txt

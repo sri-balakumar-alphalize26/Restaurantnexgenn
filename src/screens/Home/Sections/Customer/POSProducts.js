@@ -19,7 +19,7 @@ import { AntDesign } from '@expo/vector-icons';
 import { Button } from '@components/common/Button';
 import useKitchenTickets from '@stores/kitchen/ticketsStore';
 import { useTranslation, usePressOnce } from '@hooks';
-import { loadPosConfig } from '@api/services/kotService';
+import { loadPosConfig, printReceipt, printInvoice } from '@api/services/kotService';
 
 // Helper: build Odoo headers from AsyncStorage (same as generalApi._buildOdooHeaders)
 const _buildOdooHeadersLocal = async () => {
@@ -979,6 +979,24 @@ const POSProducts = ({ navigation, route }) => {
 
       setPayModalVisible(false);
       setPayInputAmount('');
+
+      // Best-effort auto-print the counter receipt to the network printer.
+      // Fire-and-forget — never blocks the order; shows a toast so the cashier
+      // can see if it was sent. Silent only when no Receipt/Counter printer is set.
+      try {
+        printReceipt(existingOrderId).then((r) => {
+          if (!r) return;
+          if (r.success) {
+            Toast.show({ type: 'success', text1: '🧾 Receipt sent to printer', position: 'bottom', visibilityTime: 2000 });
+          } else {
+            const msg = r.error || r.message || '';
+            console.log('[Receipt] not printed:', msg);
+            if (!/no .*printer configured/i.test(msg)) {
+              Toast.show({ type: 'error', text1: 'Receipt not printed', text2: msg, position: 'bottom', visibilityTime: 3500 });
+            }
+          }
+        }).catch(() => {});
+      } catch (_) {}
 
       Alert.alert(t.paymentSuccessful, t.orderClosedSuccess, [{
         text: t.ok || 'OK',
