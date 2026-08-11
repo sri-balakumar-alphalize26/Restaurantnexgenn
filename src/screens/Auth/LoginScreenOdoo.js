@@ -1,5 +1,5 @@
 // src/screens/Auth/LoginScreenOdoo.js
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   View,
   Keyboard,
@@ -14,6 +14,7 @@ import {
   I18nManager,
 } from "react-native";
 import { COLORS, FONT_FAMILY } from "@constants/theme";
+import { MaterialIcons } from "@expo/vector-icons";
 import { LogBox } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { OverlayLoader } from "@components/Loader";
@@ -48,6 +49,25 @@ const LoginScreenOdoo = () => {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
   const [rememberMe, setRememberMe] = useState(false);
+
+  // Hidden service-mode entry: 7 quick taps on the "Welcome Back" title reveal
+  // a gear in the top-right that routes to DeviceSetup. Lets a technician
+  // repoint the cashier at a different Odoo server / register without clearing
+  // app data, without exposing the option to everyday users.
+  const [gearVisible, setGearVisible] = useState(false);
+  const tapCountRef = useRef(0);
+  const lastTapRef = useRef(0);
+  const handleWelcomeTap = () => {
+    const now = Date.now();
+    // Taps more than 3s apart start a fresh run, so stray taps over a long
+    // session never accumulate into the gesture.
+    tapCountRef.current = now - lastTapRef.current > 3000 ? 1 : tapCountRef.current + 1;
+    lastTapRef.current = now;
+    if (tapCountRef.current >= 7) {
+      tapCountRef.current = 0;
+      setGearVisible(true);
+    }
+  };
 
   // Load saved language preference on mount
   useEffect(() => {
@@ -179,6 +199,20 @@ const LoginScreenOdoo = () => {
       <SafeAreaView backgroundColor={NAVY} style={{ flex: 1 }}>
         <OverlayLoader visible={loading} />
 
+        {/* Revealed by 7 taps on the title. reset() rather than navigate() so
+            there is no back-swipe into a half-completed login. */}
+        {gearVisible ? (
+          <TouchableOpacity
+            testID="login-device-setup-gear"
+            style={styles.gearBtn}
+            activeOpacity={0.7}
+            onPress={() => navigation.reset({ index: 0, routes: [{ name: 'DeviceSetup' }] })}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <MaterialIcons name="settings" size={22} color="#fff" />
+          </TouchableOpacity>
+        ) : null}
+
         {/* ── Header with logo ── */}
         <View style={styles.header}>
           <View style={styles.logoGlow} />
@@ -215,7 +249,16 @@ const LoginScreenOdoo = () => {
             showsVerticalScrollIndicator={false}
             contentContainerStyle={styles.cardContent}
           >
-            <Text testID="login-welcome-title" style={[styles.title, rtlStyle]}>{t.welcomeBack}</Text>
+            {/* 7 taps here reveal the DeviceSetup gear (see handleWelcomeTap).
+                testID lives on the touchable: the shared Text component does
+                not forward testID to the native view. */}
+            <TouchableOpacity
+              testID="login-welcome-title"
+              activeOpacity={1}
+              onPress={handleWelcomeTap}
+            >
+              <Text style={[styles.title, rtlStyle]}>{t.welcomeBack}</Text>
+            </TouchableOpacity>
             <Text style={[styles.subtitle, rtlStyle]}>{t.signInToContinue}</Text>
 
             {/* Username */}
@@ -465,6 +508,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: FONT_FAMILY.urbanistBold,
     letterSpacing: 0.5,
+  },
+  // Hidden DeviceSetup gear. Mirrors the language toggle's inset but on the
+  // right, so the two never overlap.
+  gearBtn: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    zIndex: 10,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   // Language toggle styles
   langToggleWrap: {

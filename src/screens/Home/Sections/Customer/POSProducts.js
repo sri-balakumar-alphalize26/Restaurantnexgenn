@@ -2,7 +2,7 @@ import React, { useEffect, useCallback, useState, useMemo, useRef } from 'react'
 import { View, Text, TextInput, FlatList, TouchableOpacity, ScrollView, Modal, Pressable, StyleSheet as RNStyleSheet, InteractionManager, Platform, Alert, ActivityIndicator } from 'react-native';
 import { NavigationHeader } from '@components/Header';
 import { ProductsList } from '@components/Product';
-import { fetchPosPresets, addLineToOrderOdoo, updateOrderLineOdoo, removeOrderLineOdoo, fetchPosOrderById, fetchOrderLinesByIds, fetchPosCategoriesOdoo, fetchProductCategoriesOdoo, fetchCategoriesOdoo, preloadAllProducts, createDraftPosOrderOdoo, fetchPosPaymentMethodsOdoo, createPosOrderOdoo, createPosPaymentOdoo, fetchPOSSessions, fetchPricelistsOdoo, fetchPricelistItemsOdoo, updatePosOrderFields, fetchPresetSchedule, toOdooUtcDatetime } from '@api/services/generalApi';
+import { fetchPosPresets, addLineToOrderOdoo, updateOrderLineOdoo, removeOrderLineOdoo, fetchPosOrderById, fetchOrderLinesByIds, fetchPosCategoriesOdoo, fetchProductCategoriesOdoo, fetchCategoriesOdoo, preloadAllProducts, createDraftPosOrderOdoo, fetchPosPaymentMethodsOdoo, createPosOrderOdoo, createPosPaymentOdoo, fetchPOSSessions, fetchPricelistsOdoo, fetchPricelistItemsOdoo, updatePosOrderFields, fetchPresetSchedule, toOdooUtcDatetime, resolveTakeawayPresetId } from '@api/services/generalApi';
 import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { FlashList } from '@shopify/flash-list';
 import { formatData } from '@utils/formatters';
@@ -671,17 +671,25 @@ const POSProducts = ({ navigation, route }) => {
     }
 
     // Fetch preset schedule from Odoo
-    const presetId = route?.params?.preset_id || 10;
-    try {
-      const resp = await fetchPresetSchedule(presetId);
-      console.log('[KOT Wizard] schedule fetch result:', JSON.stringify(resp?.result?.map(r => ({ name: r.name, day: r.day_of_week, period: r.day_period, from: r.hour_from, to: r.hour_to }))));
-      if (resp?.result && Array.isArray(resp.result) && resp.result.length > 0) {
-        setKotSchedule(resp.result);
-      } else {
+    // Only the time-slot lookup needs the preset. If it cannot be resolved we
+    // still open the wizard, just without preset-driven slots — never block the
+    // order on it.
+    const presetId = route?.params?.preset_id || (await resolveTakeawayPresetId());
+    if (!presetId) {
+      console.log('[TAKEAWAY]', 'schedule: no preset resolved, opening wizard without time slots');
+      setKotSchedule(null);
+    } else {
+      try {
+        const resp = await fetchPresetSchedule(presetId);
+        console.log('[KOT Wizard] schedule fetch result:', JSON.stringify(resp?.result?.map(r => ({ name: r.name, day: r.day_of_week, period: r.day_period, from: r.hour_from, to: r.hour_to }))));
+        if (resp?.result && Array.isArray(resp.result) && resp.result.length > 0) {
+          setKotSchedule(resp.result);
+        } else {
+          setKotSchedule(null);
+        }
+      } catch (_) {
         setKotSchedule(null);
       }
-    } catch (_) {
-      setKotSchedule(null);
     }
 
     await _kotLoadRecentNames();
@@ -1539,7 +1547,7 @@ const POSProducts = ({ navigation, route }) => {
       sessionId,
       userId,
       tableId: route?.params?.tableId || false,
-      preset_id: route?.params?.preset_id || 10,
+      preset_id: route?.params?.preset_id || (await resolveTakeawayPresetId()) || undefined,
       order_type: route?.params?.order_type || 'TAKEAWAY',
     });
     if (created && created.result) {

@@ -41,8 +41,10 @@ const ChooseOrderType = ({ navigation, route }) => {
   const goTakeaway = async () => {
     setLoading(true);
     try {
-      let preset_id = 10;
-      let preset = { id: 10, name: 'Takeaway' };
+      // Resolve by name — preset ids differ per database and are renumbered by
+      // Odoo upgrades, so there is no safe hardcoded id to fall back to.
+      let preset_id = null;
+      let preset = null;
       try {
         const resp = await fetchPosPresets({ limit: 200 });
         if (resp && resp.result && Array.isArray(resp.result) && resp.result.length > 0) {
@@ -52,6 +54,7 @@ const ChooseOrderType = ({ navigation, route }) => {
           preset = { id: chosen.id, name: chosen.name };
         }
       } catch (e) {}
+      console.log('[TAKEAWAY]', `new order: preset_id=${preset_id ?? '(none resolved)'}${preset ? ` "${preset.name}"` : ''}`);
 
       // Always create a brand-new draft order so the cart starts empty.
       const created = await createDraftPosOrderOdoo({

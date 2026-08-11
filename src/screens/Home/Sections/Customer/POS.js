@@ -5,7 +5,7 @@ import { NavigationHeader } from '@components/Header';
 import { Button } from '@components/common/Button';
 import { useProductStore } from '@stores/product';
 import Toast from 'react-native-toast-message';
-import { createPosOrderOdoo } from '@api/services/generalApi';
+import { createPosOrderOdoo, resolveTakeawayPresetId } from '@api/services/generalApi';
 import { fetchPaymentJournalsOdoo, createAccountPaymentOdoo } from '@api/services/generalApi';
 import { createPosPaymentOdoo } from '@api/services/generalApi';
 
@@ -51,7 +51,7 @@ const POS = ({ navigation, route }) => {
     try {
       const lines = products.map(p => ({ product_id: p.id, qty: p.quantity, price: p.price, name: p.name || p.product_name || '' }));
       const partnerId = customer?.id || customer?._id || null;
-      const resp = await createPosOrderOdoo({ partnerId, lines, preset_id: 10 });
+      const resp = await createPosOrderOdoo({ partnerId, lines, preset_id: (await resolveTakeawayPresetId()) || undefined });
       if (resp && resp.error) {
         const msg = typeof resp.error === 'string' ? resp.error : (resp.error.message || 'Failed to create POS order');
         Toast.show({ type: 'error', text1: 'POS Error', text2: msg, position: 'bottom' });

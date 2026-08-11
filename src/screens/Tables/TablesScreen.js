@@ -93,8 +93,10 @@ const TablesScreen = ({ navigation, route }) => {
         // No existing order — create a new one
         const sessionId = route?.params?.sessionId;
         const userId = route?.params?.userId;
-        let preset_id = 10;
-        let preset = { id: 10, name: 'Dine In' };
+        // Resolved by name below — preset ids are per-database and get
+        // renumbered by Odoo upgrades, so there is no safe hardcoded default.
+        let preset_id = null;
+        let preset = null;
         try {
           const presetsResp = await fetchPosPresets({ limit: 200 });
           if (presetsResp && presetsResp.result && Array.isArray(presetsResp.result) && presetsResp.result.length > 0) {
