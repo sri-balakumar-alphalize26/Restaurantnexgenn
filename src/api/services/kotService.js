@@ -12,6 +12,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 import { isLocalServerUrl } from '@utils/network/serverMode';
 import { deliverRenderedJobs } from '@utils/printing/lanPrinter';
+import { pruneFieldsForModel } from '@api/services/generalApi';
 
 // ── Read connection info from AsyncStorage ───────────────────
 
@@ -105,14 +106,24 @@ let _posConfigCache = null;
 
 async function _fetchPosConfig(configId) {
   try {
+    // Only id and payment_pin are read anywhere (payment_pin drives the PIN gate
+    // in POSProducts). This used to also ask for kot_printer_ip/_port/
+    // kot_use_print_agent/kot_agent_url — fields no installed module defines:
+    // pos_kot_print_online moved to per-category printer records
+    // (kot_category_printer_ids), and the last two had no consumers at all.
+    // One bad field rejects the whole search_read, so those dead names were
+    // taking payment_pin down with them.
+    //
+    // Pruned rather than hardcoded because payment_pin only exists once
+    // pos_payment_pin is installed — the same code has to be right before and
+    // after that happens.
+    const { base, headers } = await getConnectionInfo();
+    const fields = await pruneFieldsForModel('pos.config', ['id', 'payment_pin'], base, headers, 'posConfig');
     const configs = await callKw(
       'pos.config',
       'search_read',
       [configId ? [['id', '=', configId]] : []],
-      {
-        fields: ['id', 'kot_printer_ip', 'kot_printer_port', 'kot_use_print_agent', 'kot_agent_url', 'payment_pin'],
-        limit: 1,
-      },
+      { fields, limit: 1 },
     );
     if (configs && configs.length) {
       console.log('[KOT] POS config loaded:', JSON.stringify(configs[0]));

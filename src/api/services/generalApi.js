@@ -1778,6 +1778,11 @@ const _pruneFieldListForModel = async (model, fields, baseUrl, headers, label) =
   return kept.length > 0 ? kept : ['id'];
 };
 
+// Public alias so other services (kotService) share this guard instead of
+// growing their own copy — a duplicated payment path is what let 'Invalid field
+// client_uuid' survive a fix to the shared helper. One implementation.
+export const pruneFieldsForModel = _pruneFieldListForModel;
+
 // Create POS order in Odoo via JSON-RPC
 // preset_id defaults to undefined (not the old hardcoded 10) so an unset preset
 // leaves the field off the payload entirely — see resolveTakeawayPresetId.
