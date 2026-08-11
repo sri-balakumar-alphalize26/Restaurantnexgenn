@@ -932,42 +932,55 @@ const POSProducts = ({ navigation, route }) => {
         paymentUuidRef.current = generateUUIDv4();
       }
 
-      // Step 1: Add payment record to the existing order
-      const paymentVals = {
-        pos_order_id: existingOrderId,
+      // Step 1: Add payment record to the existing order.
+      //
+      // Goes through the shared helper rather than a hand-rolled create. This
+      // used to POST pos.payment directly, which meant client_uuid went out
+      // unpruned and Odoo rejected the whole create on databases without the
+      // idempotency patch — a fix to createPosPaymentOdoo never reached the
+      // sheet the cashier actually uses. One guarded path, one place to fix.
+      const payResp = await createPosPaymentOdoo({
+        orderId: existingOrderId,
         amount: paidAmt,
-        payment_method_id: selectedPayMethodId,
-        session_id: sessionId || false,
-        company_id: 1,
-        client_uuid: paymentUuidRef.current,
-      };
-
-      const payResp = await fetch(`${baseUrl}/web/dataset/call_kw`, {
-        method: 'POST', headers,
-        body: JSON.stringify({
-          jsonrpc: '2.0', method: 'call',
-          params: { model: 'pos.payment', method: 'create', args: [paymentVals], kwargs: {} },
-        }),
+        paymentMethodId: selectedPayMethodId,
+        sessionId,
+        companyId: 1,
+        clientUuid: paymentUuidRef.current,
       });
-      const payData = await payResp.json();
-      if (payData?.error) {
-        Alert.alert(t.paymentFailed, payData.error?.data?.message || payData.error?.message || 'Payment creation failed');
+
+      // Each entry in .results carries its own .error; the top-level .error is
+      // set only when the whole call throws. Checking one without the other
+      // lets a rejected payment pass as success.
+      const payErrors = [
+        ...(payResp?.error ? [payResp.error.data?.message || payResp.error.message || 'Payment creation failed'] : []),
+        ...((payResp?.results || []).filter(r => r && r.error)
+          .map(r => r.error.data?.message || r.error.message || 'Payment creation failed')),
+      ];
+      if (payErrors.length > 0) {
+        console.log('[PAYMENT]', `Pay Now FAILED -> ${payErrors.join(' | ')}`);
+        Alert.alert(t.paymentFailed, payErrors[0]);
         return;
       }
 
-      // Step 2: Update order amount_paid and state to 'paid'
-      const updateResp = await fetch(`${baseUrl}/web/dataset/call_kw`, {
-        method: 'POST', headers,
-        body: JSON.stringify({
-          jsonrpc: '2.0', method: 'call',
-          params: {
-            model: 'pos.order', method: 'write',
-            args: [[existingOrderId], { amount_paid: paidAmt, amount_return: Math.max(0, paidAmt - totalAmt), state: 'paid' }],
-            kwargs: {},
-          },
-        }),
+      // Step 2: Update order amount_paid and state to 'paid'.
+      // The raw write this replaces captured its response and never read it, so
+      // a failed write left the order in draft while the cart cleared and a
+      // receipt printed. Guarded helper + checked result.
+      const updateResp = await updatePosOrderFields(existingOrderId, {
+        amount_paid: paidAmt,
+        amount_return: Math.max(0, paidAmt - totalAmt),
+        state: 'paid',
       });
-      const updateData = await updateResp.json();
+      // Odoo's write returns true on success, so a falsy result is a failure
+      // even when no error came back with it.
+      if (!updateResp || updateResp.error || !updateResp.result) {
+        const msg = updateResp?.error?.data?.message || updateResp?.error?.message || 'Could not mark the order as paid';
+        console.log('[PAYMENT]', `order write FAILED -> ${msg}`);
+        // The payment row exists but the order is still draft. Stop before
+        // clearing the cart so this cannot present as a completed sale.
+        Alert.alert(t.paymentFailed, msg);
+        return;
+      }
 
       // Step 3: Try to validate/close the order via action_pos_order_paid
       try {
