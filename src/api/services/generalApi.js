@@ -349,25 +349,25 @@ export const fetchPosCategoriesOdoo = async () => {
   // fetchCategoriesOdoo already falls back to a /web/image URL, so tiles
   // still show artwork — it just loads lazily per tile instead of up front.
   // (Same fix already applied to the product preload.)
+  //
+  // This used to be a three-tier ladder, but tier 2 retried with the SAME
+  // pos_config_ids that had just failed (its comment claimed otherwise), so on a
+  // database without that field both tiers failed identically and every load
+  // burned two rejected round-trips before reaching the minimal tier. Ask the
+  // model what it has instead of guessing — one request, no failures.
+  const wanted = ['id', 'name', 'parent_id', 'sequence', 'pos_config_ids', 'has_image'];
+  const fields = await _pruneFieldListForModel('pos.category', wanted, baseUrl, headers, 'categories');
   try {
-    return _finish(await doFetch(['id', 'name', 'parent_id', 'sequence', 'pos_config_ids', 'has_image']));
-  } catch (e1) {
-    _posLog(`categories: tier 1 failed -> ${e1?.message || e1}`);
-  }
-
-  // Odoo 13-15: no has_image / pos_config_ids
-  try {
-    return _finish(await doFetch(['id', 'name', 'parent_id', 'sequence', 'pos_config_ids']));
-  } catch (e2) {
-    _posLog(`categories: tier 2 failed -> ${e2?.message || e2}`);
-  }
-
-  // Minimal fields — always safe
-  try {
-    return _finish(await doFetch(['id', 'name', 'parent_id', 'sequence']));
+    return _finish(await doFetch(fields));
   } catch (error) {
-    _posLog(`categories: ALL TIERS FAILED -> ${error?.message || error}`);
-    throw error;
+    // Only reachable if fields_get failed and we sent the list unpruned.
+    _posLog(`categories: failed -> ${error?.message || error} — retrying minimal fields`);
+    try {
+      return _finish(await doFetch(['id', 'name', 'parent_id', 'sequence']));
+    } catch (e2) {
+      _posLog(`categories: ALL ATTEMPTS FAILED -> ${e2?.message || e2}`);
+      throw e2;
+    }
   }
 };
 // Full workflow: create invoice, post, pay, and log status
@@ -1695,8 +1695,93 @@ export const linkInvoiceToPosOrderOdoo = async ({ orderId, invoiceId, setState =
   }
 };
 
+// The field list of an Odoo model on THIS database, fetched once per model.
+//
+// Odoo rejects a create/write/search_read outright if the payload names any
+// field the model does not have, and the field set depends on which modules are
+// installed: table_id only exists with pos_restaurant, order_type only with the
+// custom module, client_uuid only where the idempotency patch is applied.
+// Hardcoding a payload therefore breaks on any database whose module set
+// differs — 'Invalid field table_id in pos.order' is exactly that.
+//
+// Fails OPEN: if fields_get itself fails we return [] and callers send the
+// payload unpruned. A diagnostic beats silently dropping every field on a
+// transient network error.
+const _MODEL_FIELD_PROBES = {
+  'pos.order': ['table_id', 'preset_id', 'preset_time', 'order_type', 'floating_order_name', 'internal_note', 'client_uuid'],
+  'pos.payment': ['client_uuid', 'session_id', 'company_id', 'partner_id'],
+};
+
+const _getModelFields = async (model, baseUrl, headers) => {
+  if (!global.__odoo_fields_cache) global.__odoo_fields_cache = {};
+  const cache = global.__odoo_fields_cache;
+  if (Array.isArray(cache[model])) return cache[model];
+  try {
+    const resp = await fetch(`${baseUrl}/web/dataset/call_kw`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'call', params: { model, method: 'fields_get', args: [], kwargs: {} } }),
+    });
+    const data = await resp.json();
+    cache[model] = data && data.result ? Object.keys(data.result) : [];
+    // One-time capability line per model: which optional fields this database
+    // actually has. This is what identifies a module-set mismatch on sight.
+    const probe = _MODEL_FIELD_PROBES[model] || [];
+    if (probe.length) {
+      const present = probe.filter((f) => cache[model].includes(f));
+      const absent = probe.filter((f) => !cache[model].includes(f));
+      _posLog(`${model} fields: ${cache[model].length} total | present=[${present.join(',')}] | ABSENT=[${absent.join(',')}]`);
+    } else {
+      _posLog(`${model} fields: ${cache[model].length} total`);
+    }
+  } catch (e) {
+    cache[model] = [];
+    _posLog(`${model} fields_get failed -> ${e?.message || e} (payloads sent unpruned)`);
+  }
+  return cache[model];
+};
+
+// Drop keys the model does not have, so one unsupported field cannot reject the
+// whole create. Logs what it removed — silent pruning would hide real drift.
+//
+// `required` names fields the record is meaningless without. Pruning is only
+// ever correct for OPTIONAL fields: if a required one is missing from the model
+// something is wrong that dropping it would only hide, so this throws instead of
+// writing a half-valid record.
+const _pruneValsForModel = async (model, vals, baseUrl, headers, label, required = []) => {
+  const valid = await _getModelFields(model, baseUrl, headers);
+  if (!Array.isArray(valid) || valid.length === 0) return vals;
+  const kept = {};
+  const dropped = [];
+  for (const [k, v] of Object.entries(vals)) {
+    if (valid.includes(k)) kept[k] = v;
+    else dropped.push(k);
+  }
+  const lostRequired = required.filter((f) => dropped.includes(f));
+  if (lostRequired.length) {
+    throw new Error(`${model} is missing required field(s) [${lostRequired.join(', ')}] on this database — refusing to create an incomplete record`);
+  }
+  if (dropped.length) _posLog(`${label}: dropped field(s) not on ${model} -> [${dropped.join(', ')}]`);
+  return kept;
+};
+
+// Same guard for the READ side. A search_read naming a missing field is
+// rejected whole, and callers that do `(resp.result) || []` then render the
+// failure as "no orders" — which is how a broken fetch looked like an empty
+// session. Prune the requested fields so the read degrades to fewer columns
+// instead of no rows.
+const _pruneFieldListForModel = async (model, fields, baseUrl, headers, label) => {
+  const valid = await _getModelFields(model, baseUrl, headers);
+  if (!Array.isArray(valid) || valid.length === 0) return fields;
+  const kept = fields.filter((f) => valid.includes(f));
+  const dropped = fields.filter((f) => !valid.includes(f));
+  if (dropped.length) _posLog(`${label}: not reading field(s) absent from ${model} -> [${dropped.join(', ')}]`);
+  return kept.length > 0 ? kept : ['id'];
+};
+
 // Create POS order in Odoo via JSON-RPC
-export const createPosOrderOdoo = async ({ partnerId = null, lines = [], sessionId = null, posConfigId = null, companyId = null, orderName = null, preset_id = 10, order_type = null, clientUuid = null } = {}) => {
+// preset_id defaults to undefined (not the old hardcoded 10) so an unset preset
+// leaves the field off the payload entirely — see resolveTakeawayPresetId.
+export const createPosOrderOdoo = async ({ partnerId = null, lines = [], sessionId = null, posConfigId = null, companyId = null, orderName = null, preset_id = undefined, order_type = null, clientUuid = null } = {}) => {
   try {
     if (!lines || !Array.isArray(lines) || lines.length === 0) {
       throw new Error('lines are required to create pos order');
@@ -1738,29 +1823,14 @@ export const createPosOrderOdoo = async ({ partnerId = null, lines = [], session
       amount_return: 0,
       state: 'paid',
     };
-    if (order_type) {
-      try {
-        const hasField = await (async (field) => {
-          try {
-            if (!global.__pos_order_fields_cache) {
-              const fieldsResp = await fetch(`${baseUrl}/web/dataset/call_kw`, {
-                method: 'POST', headers,
-                body: JSON.stringify({ jsonrpc: '2.0', method: 'call', params: { model: 'pos.order', method: 'fields_get', args: [], kwargs: {} } }),
-              });
-              const fieldsData = await fieldsResp.json();
-              global.__pos_order_fields_cache = fieldsData && fieldsData.result ? Object.keys(fieldsData.result) : [];
-            }
-            return Array.isArray(global.__pos_order_fields_cache) && global.__pos_order_fields_cache.includes(field);
-          } catch (e) {
-            return false;
-          }
-        })('order_type');
-        if (hasField) vals.order_type = String(order_type).toUpperCase();
-      } catch (e) {}
-    }
+    if (order_type) vals.order_type = String(order_type).toUpperCase();
     if (sessionId) vals.session_id = sessionId;
     if (posConfigId) vals.config_id = posConfigId;
-    if (typeof preset_id !== 'undefined') vals.preset_id = preset_id;
+    if (preset_id !== undefined && preset_id !== null) vals.preset_id = preset_id;
+
+    // Prune once, at the end, so every optional field is covered rather than
+    // just order_type.
+    const safeVals = await _pruneValsForModel('pos.order', vals, baseUrl, headers, 'createPosOrderOdoo', ['session_id']);
 
     const response = await fetch(`${baseUrl}/web/dataset/call_kw`, {
       method: 'POST',
@@ -1771,7 +1841,7 @@ export const createPosOrderOdoo = async ({ partnerId = null, lines = [], session
         params: {
           model: 'pos.order',
           method: 'create',
-          args: [vals],
+          args: [safeVals],
           kwargs: {},
         },
       }),
@@ -1857,19 +1927,38 @@ export const createPosPaymentOdoo = async ({ orderId, payments, amount, journalI
         client_uuid: lineUuid,
       };
 
+      // client_uuid is an idempotency field that only exists where that patch is
+      // applied; on a stock database it would reject the whole create. Prune the
+      // optional keys, but never the three that make a payment meaningful.
+      let safePaymentVals;
+      try {
+        safePaymentVals = await _pruneValsForModel(
+          'pos.payment', paymentVals, baseUrl, headers, 'createPosPaymentOdoo',
+          ['pos_order_id', 'amount', 'payment_method_id']);
+      } catch (pruneErr) {
+        _posLog(`payment ${pmtIdx + 1}/${paymentRecords.length}: ${pruneErr.message}`);
+        results.push({ error: { message: pruneErr.message } });
+        continue;
+      }
+
+      _posLog(`payment ${pmtIdx + 1}/${paymentRecords.length}: ${amt > 0 ? 'RECEIVED' : 'CHANGE'} amount=${amt} method=${finalPaymentMethodId} order=${orderId}`);
+
       const response = await fetch(`${baseUrl}/web/dataset/call_kw`, {
         method: 'POST',
         headers,
         body: JSON.stringify({
           jsonrpc: '2.0', method: 'call',
-          params: { model: 'pos.payment', method: 'create', args: [paymentVals], kwargs: {} },
+          params: { model: 'pos.payment', method: 'create', args: [safePaymentVals], kwargs: {} },
         }),
       });
       const data = await response.json();
 
       if (data && data.error) {
+        const msg = data.error.data?.message || data.error.message || 'unknown error';
+        _posLog(`payment ${pmtIdx + 1}/${paymentRecords.length} FAILED -> ${msg}`);
         results.push({ error: data.error });
       } else {
+        _posLog(`payment ${pmtIdx + 1}/${paymentRecords.length} OK -> pos.payment id ${data.result}`);
         results.push({ result: data.result });
       }
     }
@@ -2010,7 +2099,8 @@ export const fetchOpenOrdersByTable = async (tableId) => {
 };
 
 // Create a draft pos.order assigned to a table
-export const createDraftPosOrderOdoo = async ({ sessionId, userId, tableId, partnerId = false, note = '', preset_id = 10, order_type = null } = {}) => {
+// preset_id defaults to undefined (not the old hardcoded 10); see createPosOrderOdoo.
+export const createDraftPosOrderOdoo = async ({ sessionId, userId, tableId, partnerId = false, note = '', preset_id = undefined, order_type = null } = {}) => {
   try {
     const { baseUrl, headers } = await _buildOdooHeaders();
     const vals = {
@@ -2025,40 +2115,15 @@ export const createDraftPosOrderOdoo = async ({ sessionId, userId, tableId, part
       amount_paid: 0,
       amount_return: 0,
       state: 'draft',
-      preset_id: preset_id,
     };
-    if (order_type) {
-      try {
-        const hasField = await (async (field) => {
-          try {
-            if (!global.__pos_order_fields_cache) {
-              const fieldsResp = await fetch(`${baseUrl}/web/dataset/call_kw`, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
-                  jsonrpc: '2.0',
-                  method: 'call',
-                  params: {
-                    model: 'pos.order',
-                    method: 'fields_get',
-                    args: [],
-                    kwargs: {},
-                  },
-                }),
-              });
-              const fieldsData = await fieldsResp.json();
-              global.__pos_order_fields_cache = fieldsData && fieldsData.result ? Object.keys(fieldsData.result) : [];
-            }
-            return Array.isArray(global.__pos_order_fields_cache) && global.__pos_order_fields_cache.includes(field);
-          } catch (e) {
-            return false;
-          }
-        })('order_type');
-        if (hasField) vals.order_type = String(order_type).toUpperCase();
-      } catch (e) {
-        // ignore
-      }
-    }
+    if (preset_id !== undefined && preset_id !== null) vals.preset_id = preset_id;
+    if (order_type) vals.order_type = String(order_type).toUpperCase();
+
+    // table_id is the one that bit us: it only exists when pos_restaurant is
+    // installed, and it was being sent unconditionally, so every takeaway order
+    // failed with 'Invalid field table_id in pos.order' on databases without it.
+    const safeVals = await _pruneValsForModel('pos.order', vals, baseUrl, headers, 'createDraftPosOrderOdoo', ['session_id']);
+
     const response = await fetch(`${baseUrl}/web/dataset/call_kw`, {
       method: 'POST',
       headers,
@@ -2068,7 +2133,7 @@ export const createDraftPosOrderOdoo = async ({ sessionId, userId, tableId, part
         params: {
           model: 'pos.order',
           method: 'create',
-          args: [vals],
+          args: [safeVals],
           kwargs: {},
         },
         id: new Date().getTime(),
@@ -2100,38 +2165,10 @@ export const updatePosOrderFields = async (orderId, fields = {}) => {
     if (!orderId || !fields || Object.keys(fields).length === 0) return { result: false };
     const { baseUrl, headers } = await _buildOdooHeaders();
 
-    // Ensure we have the fields cache so we only write fields that exist on the model
-    if (!global.__pos_order_fields_cache) {
-      try {
-        const fieldsResp = await fetch(`${baseUrl}/web/dataset/call_kw`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            jsonrpc: '2.0', method: 'call',
-            params: { model: 'pos.order', method: 'fields_get', args: [], kwargs: {} },
-          }),
-        });
-        const fieldsData = await fieldsResp.json();
-        global.__pos_order_fields_cache = fieldsData && fieldsData.result ? Object.keys(fieldsData.result) : [];
-      } catch (_) {}
-    }
-
-    const validFields = Array.isArray(global.__pos_order_fields_cache) ? global.__pos_order_fields_cache : [];
-    const vals = {};
-    const skipped = [];
-    for (const [key, value] of Object.entries(fields)) {
-      if (validFields.length === 0 || validFields.includes(key)) {
-        vals[key] = value;
-      } else {
-        skipped.push(key);
-      }
-    }
-    console.log('[updatePosOrderFields] orderId:', orderId, 'writing:', JSON.stringify(vals), 'skipped:', skipped);
-    // Log datetime-related fields available on model for debugging
-    if (validFields.length > 0) {
-      const dateFields = validFields.filter(f => f.includes('date') || f.includes('time') || f.includes('schedule') || f.includes('pickup') || f.includes('preset') || f.includes('planned'));
-      console.log('[updatePosOrderFields] date/time fields on pos.order:', dateFields);
-    }
+    // Same guard as the create paths — this used to carry its own copy of the
+    // fields_get + filter logic.
+    const vals = await _pruneValsForModel('pos.order', fields, baseUrl, headers, 'updatePosOrderFields');
+    console.log('[updatePosOrderFields] orderId:', orderId, 'writing:', JSON.stringify(vals));
     if (Object.keys(vals).length === 0) return { result: false };
 
     const response = await fetch(`${baseUrl}/web/dataset/call_kw`, {
@@ -2245,9 +2282,10 @@ export const fetchOrders = async ({ sessionId = null, limit = 100, order = 'crea
   try {
     const domain = [];
     if (sessionId) domain.push(['session_id', '=', sessionId]);
-    const useFields = Array.isArray(fields) && fields.length > 0 ? fields : ['id', 'name', 'state', 'amount_total', 'table_id', 'create_date'];
+    const requested = Array.isArray(fields) && fields.length > 0 ? fields : ['id', 'name', 'state', 'amount_total', 'table_id', 'create_date'];
 
     const { baseUrl, headers } = await _buildOdooHeaders();
+    const useFields = await _pruneFieldListForModel('pos.order', requested, baseUrl, headers, 'fetchOrders');
     const response = await fetch(`${baseUrl}/web/dataset/call_kw`, {
       method: 'POST',
       headers,
@@ -2279,6 +2317,10 @@ export const fetchPosOrderById = async (orderId) => {
   try {
     if (!orderId) return { result: null };
     const { baseUrl, headers } = await _buildOdooHeaders();
+    // include preset_id so clients can read the selected preset on the order
+    const orderFields = await _pruneFieldListForModel('pos.order',
+      ['id','name','state','amount_total','table_id','lines','create_date','user_id','partner_id','preset_id','pricelist_id','pos_reference'],
+      baseUrl, headers, 'fetchPosOrderById');
     const response = await fetch(`${baseUrl}/web/dataset/call_kw`, {
       method: 'POST',
       headers,
@@ -2289,8 +2331,7 @@ export const fetchPosOrderById = async (orderId) => {
           model: 'pos.order',
           method: 'search_read',
           args: [[['id', '=', orderId]]],
-          // include preset_id so clients can read the selected preset on the order
-          kwargs: { fields: ['id','name','state','amount_total','table_id','lines','create_date','user_id','partner_id','preset_id','pricelist_id','pos_reference'] },
+          kwargs: { fields: orderFields },
         },
         id: new Date().getTime(),
       }),
@@ -2339,6 +2380,13 @@ export const fetchOrderLinesByIds = async (lineIds = []) => {
 };
 
 // Fetch pos.preset records (POS presets like Dine In / Takeaway)
+//
+// Only id + name are requested, deliberately. Odoo rejects a whole search_read
+// when ANY requested field is invalid, so a field that exists in one Odoo
+// version and not the next takes the entire preset list down with it — the
+// Odoo 19 upgrade dropped 'available_in_self' and broke Takeaway Orders that
+// way. id and name exist on every model in every version, and they are the only
+// fields any caller reads. Do not add speculative fields here.
 export const fetchPosPresets = async ({ limit = 200 } = {}) => {
   try {
     const { baseUrl, headers } = await _buildOdooHeaders();
@@ -2352,7 +2400,7 @@ export const fetchPosPresets = async ({ limit = 200 } = {}) => {
           model: 'pos.preset',
           method: 'search_read',
           args: [[]],
-          kwargs: { fields: ['id','name','available_in_self','use_guest','pricelist_id','color','image_128'], limit, order: 'id asc' },
+          kwargs: { fields: ['id','name'], limit, order: 'id asc' },
         },
         id: new Date().getTime(),
       }),
@@ -2366,6 +2414,55 @@ export const fetchPosPresets = async ({ limit = 200 } = {}) => {
   } catch (error) {
     return { error };
   }
+};
+
+// Resolve the takeaway pos.preset id for THIS database.
+//
+// preset ids are per-database and are renumbered by Odoo upgrades/migrations.
+// The app used to hardcode 10, which silently became a different preset after
+// the server moved to Odoo 19 — paid orders were then written with the wrong
+// preset and dropped out of the Takeaway Orders list. Match on name instead,
+// the same rule TakeawayOrdersScreen uses to decide what belongs in that list.
+//
+// Returns null when nothing matches, so callers can omit preset_id rather than
+// write a wrong one.
+//
+// Only a DEFINITIVE answer is cached. A failed RPC is not an answer about this
+// database, and caching it used to strip preset_id from every order for the
+// rest of the app session — one dropped request at startup was enough, since
+// clearTakeawayPresetCache has no callers. Failures now fall through uncached
+// so the next caller retries.
+let _takeawayPresetId;
+export const resolveTakeawayPresetId = async () => {
+  if (_takeawayPresetId !== undefined) return _takeawayPresetId;
+  try {
+    const resp = await fetchPosPresets({ limit: 200 });
+    if (resp && resp.error) {
+      _posLog(`takeaway preset: lookup failed -> ${resp.error.data?.message || resp.error.message} (not cached, will retry)`);
+      return null;
+    }
+    const presets = (resp && resp.result) || [];
+    if (!Array.isArray(presets) || presets.length === 0) {
+      _posLog('takeaway preset: none returned (empty list, not cached, will retry)');
+      return null;
+    }
+    const take = presets.find((p) => String(p.name || '').toLowerCase().includes('take'));
+    if (!take) {
+      // A real answer about this database: presets exist, none is a takeaway.
+      _posLog(`takeaway preset: no name contains "take" — presets are: ${presets.map((p) => p.name).join(', ')}`);
+      return (_takeawayPresetId = null);
+    }
+    _posLog(`takeaway preset: "${take.name}" = id ${take.id}`);
+    return (_takeawayPresetId = take.id);
+  } catch (e) {
+    _posLog(`takeaway preset: lookup threw -> ${e?.message || e} (not cached, will retry)`);
+    return null;
+  }
+};
+
+// Drop the cached preset id (call when the device is repointed at another DB).
+export const clearTakeawayPresetCache = () => {
+  _takeawayPresetId = undefined;
 };
 
 // Fetch schedule records for a POS preset (e.g. Takeout time slots by day)

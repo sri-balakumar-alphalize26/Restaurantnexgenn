@@ -6,7 +6,7 @@ import { COLORS } from '@constants/theme';
 import { NavigationHeader } from '@components/Header';
 import { Button } from '@components/common/Button';
 import { fetchPaymentJournalsOdoo, createAccountPaymentOdoo, fetchPOSSessions } from '@api/services/generalApi';
-import { createPosOrderOdoo, createPosPaymentOdoo } from '@api/services/generalApi';
+import { createPosOrderOdoo, createPosPaymentOdoo, resolveTakeawayPresetId } from '@api/services/generalApi';
 import { printReceipt, printInvoice } from '@api/services/kotService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
@@ -200,7 +200,19 @@ const POSPayment = ({ navigation, route }) => {
       // (e.g. network timeout + interceptor retry) resolve to the same order.
       if (!orderUuidRef.current) orderUuidRef.current = generateUUIDv4();
       const posOrderPayload = { partnerId, lines, sessionId, posConfigId, companyId, orderName: '/', clientUuid: orderUuidRef.current };
-      const posOrderPayloadWithPreset = { ...posOrderPayload, preset_id: 10, order_type: route?.params?.order_type };
+      // Keep the preset the order was created with. This used to be hardcoded
+      // to 10; preset ids are per-database and were renumbered by the Odoo 19
+      // upgrade, so paid orders were written with the wrong preset and dropped
+      // out of the Takeaway Orders list while unpaid ones stayed. When nothing
+      // resolves, omit preset_id entirely so Odoo keeps its own default rather
+      // than being handed a wrong id.
+      const presetId = route?.params?.preset_id ?? (await resolveTakeawayPresetId());
+      console.log('[TAKEAWAY]', `payment: writing preset_id=${presetId ?? '(omitted)'} (from ${route?.params?.preset_id ? 'route params' : 'name lookup'})`);
+      const posOrderPayloadWithPreset = {
+        ...posOrderPayload,
+        ...(presetId ? { preset_id: presetId } : {}),
+        order_type: route?.params?.order_type,
+      };
       const resp = await createPosOrderOdoo(posOrderPayloadWithPreset);
       if (resp && resp.error) {
         Toast.show({ type: 'error', text1: 'POS Error', text2: resp.error.message || JSON.stringify(resp.error) || 'Failed to create POS order', position: 'bottom' });
@@ -273,6 +285,7 @@ const POSPayment = ({ navigation, route }) => {
           // Log each payment record for diagnostics
           payments.forEach((p, idx) => {
             const type = p.amount > 0 ? 'RECEIVED' : 'CHANGE';
+            console.log('[PAYMENT]', `${idx + 1}/${payments.length} ${type} amount=${p.amount} method=${p.paymentMethodId} journal=${p.journalId} mode=${p.paymentMode}`);
           });
           const paymentPayload = {
             orderId: createdOrderId,
@@ -282,12 +295,32 @@ const POSPayment = ({ navigation, route }) => {
             companyId
           };
           const paymentResp = await createPosPaymentOdoo(paymentPayload);
-          if (paymentResp && paymentResp.error) {
-            Toast.show({ type: 'error', text1: 'Payment Error', text2: paymentResp.error.message || JSON.stringify(paymentResp.error) || 'Failed to create payment', position: 'bottom' });
-            // Optionally, you can return here or continue to receipt
+
+          // createPosPaymentOdoo returns { results: [...] } where EACH entry may
+          // carry its own .error — the top-level .error is only set when the
+          // whole call throws. Checking just the top level meant a rejected
+          // pos.payment create passed silently and the cashier landed on the
+          // receipt screen with the order still unpaid in Odoo.
+          const perPaymentErrors = (paymentResp?.results || [])
+            .filter(r => r && r.error)
+            .map(r => r.error.data?.message || r.error.message || 'unknown error');
+          const topLevelError = paymentResp?.error
+            ? (paymentResp.error.data?.message || paymentResp.error.message || 'Failed to create payment')
+            : null;
+          const allErrors = [...(topLevelError ? [topLevelError] : []), ...perPaymentErrors];
+
+          if (allErrors.length > 0) {
+            console.log('[PAYMENT]', `FAILED -> ${allErrors.join(' | ')}`);
+            Toast.show({ type: 'error', text1: 'Payment Error', text2: allErrors[0], position: 'bottom', visibilityTime: 5000 });
+            // An unpaid order must never present as paid. Stop here so the
+            // cashier can retry rather than handing over a bogus receipt.
+            return;
           }
+          console.log('[PAYMENT]', `all ${paymentResp?.results?.length || 0} payment(s) recorded for order ${createdOrderId}`);
         } catch (e) {
-          Toast.show({ type: 'error', text1: 'Payment Error', text2: e?.message || 'Failed to create payment', position: 'bottom' });
+          console.log('[PAYMENT]', `exception -> ${e?.message || e}`);
+          Toast.show({ type: 'error', text1: 'Payment Error', text2: e?.message || 'Failed to create payment', position: 'bottom', visibilityTime: 5000 });
+          return;
         }
       }
 

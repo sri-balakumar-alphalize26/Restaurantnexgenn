@@ -12,6 +12,7 @@ const TakeawayOrdersScreen = ({ navigation, route }) => {
   const { sessionId, userId, userName } = route?.params || {};
   const [loading, setLoading] = useState(true);
   const [orders, setOrders] = useState([]);
+  const [loadError, setLoadError] = useState(null);
   const { t } = useTranslation();
 
   const load = useCallback(async () => {
@@ -23,15 +24,55 @@ const TakeawayOrdersScreen = ({ navigation, route }) => {
         fetchOrders({ sessionId, limit: 500, fields: ['id','name','state','amount_total','table_id','create_date','preset_id','preset_time','lines','floating_order_name'] }),
         callKw('account.tax', 'search_read', [[]], { fields: ['id', 'amount', 'price_include'], limit: 500 }),
       ]);
+      // A failed preset lookup used to collapse to [] and render as "No Takeaway
+      // Orders", indistinguishable from a quiet day. Surface it instead.
+      if (presetsResp && presetsResp.error) {
+        const msg = presetsResp.error.data?.message || presetsResp.error.message || 'Could not load presets';
+        console.log('[TAKEAWAY]', `presets FAILED -> ${msg}`);
+        setLoadError(msg);
+        setOrders([]);
+        return;
+      }
+      // Same for the orders fetch. Without this a rejected search_read fell
+      // through `(result) || []` and rendered as "0 orders" — the silent empty
+      // list this screen is supposed to make impossible.
+      if (ordersResp && ordersResp.error) {
+        const msg = ordersResp.error.data?.message || ordersResp.error.message || 'Could not load orders';
+        console.log('[TAKEAWAY]', `orders FAILED -> ${msg}`);
+        setLoadError(msg);
+        setOrders([]);
+        return;
+      }
       const presets = (presetsResp && presetsResp.result) || [];
       const takePresetIds = presets.filter(p => String(p.name || '').toLowerCase().includes('take')).map(p => p.id);
       const all = (ordersResp && ordersResp.result) || [];
+
+      // Databases without pos_restaurant have no table_id and often no presets
+      // at all. Filtering by preset there discards every order and the list can
+      // never populate — but with no tables and no presets there is no dine-in
+      // to separate out, so every order in the session IS a takeaway order.
+      // Gated on the preset list being empty, so adding a preset in Odoo
+      // restores real filtering with no code change.
+      const noPresetSetup = presets.length === 0;
+
       const filtered = all.filter(o => {
-        const p = Array.isArray(o.preset_id) ? o.preset_id[0] : o.preset_id;
-        if (!p || !takePresetIds.includes(p)) return false;
+        if (!noPresetSetup) {
+          const p = Array.isArray(o.preset_id) ? o.preset_id[0] : o.preset_id;
+          if (!p || !takePresetIds.includes(p)) return false;
+        }
         const hasLines = Array.isArray(o.lines) ? o.lines.length > 0 : Number(o.amount_total || 0) > 0;
         return hasLines;
       });
+      // These five numbers identify any future "empty list" report on sight.
+      console.log('[TAKEAWAY]',
+        `session=${sessionId} | presets=[${presets.map(p => `${p.id}:${p.name}`).join(', ')}]` +
+        ` | takePresetIds=[${takePresetIds.join(',')}] | ordersFetched=${all.length} | afterFilter=${filtered.length}` +
+        ` | mode=${noPresetSetup ? 'NO-PRESETS (showing all session orders)' : 'preset-filtered'}`);
+      if (all.length > 0 && filtered.length === 0) {
+        const seen = [...new Set(all.map(o => (Array.isArray(o.preset_id) ? o.preset_id[0] : o.preset_id)))];
+        console.log('[TAKEAWAY]', `all ${all.length} orders filtered out — their preset_ids were [${seen.join(',')}]`);
+      }
+      setLoadError(null);
 
       // Build tax map: taxId -> { amount, priceInclude }
       const taxMap = {};
@@ -225,11 +266,23 @@ const TakeawayOrdersScreen = ({ navigation, route }) => {
             contentContainerStyle={s.listContent}
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={
-              <View style={s.emptyWrap}>
-                <Text style={s.emptyIcon}>📭</Text>
-                <Text style={s.emptyTitle}>{t.noTakeawayOrders}</Text>
-                <Text style={s.emptySub}>{t.takeawayOrdersAppear}</Text>
-              </View>
+              loadError ? (
+                // A load failure must never masquerade as "no orders today".
+                <View style={s.emptyWrap}>
+                  <Text style={s.emptyIcon}>⚠️</Text>
+                  <Text style={s.emptyTitle}>{t.error || 'Could not load orders'}</Text>
+                  <Text style={s.emptySub}>{loadError}</Text>
+                  <TouchableOpacity onPress={load} style={s.retryBtn} activeOpacity={0.7}>
+                    <Text style={s.retryText}>{t.retry || 'Retry'}</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={s.emptyWrap}>
+                  <Text style={s.emptyIcon}>📭</Text>
+                  <Text style={s.emptyTitle}>{t.noTakeawayOrders}</Text>
+                  <Text style={s.emptySub}>{t.takeawayOrdersAppear}</Text>
+                </View>
+              )
             }
           />
         )}
@@ -366,6 +419,18 @@ const s = StyleSheet.create({
     fontSize: 14,
     color: '#8896ab',
     marginTop: 4,
+  },
+  retryBtn: {
+    marginTop: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 20,
+    backgroundColor: '#2E294E',
+  },
+  retryText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 
